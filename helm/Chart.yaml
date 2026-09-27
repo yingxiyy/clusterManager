@@ -1,0 +1,17 @@
+apiVersion: v2
+name: cloudcluster-stack
+description: Production-grade distributed 3-member cluster stack for MongoDB 8.0.9, Flink 1.9.3, MySQL 8.4.6, Redis 6.2.6, Kafka KRaft, ZooKeeper 3.6.3, and MinIO S3 with Java 1.8 compatibility.
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - mongodb
+  - flink
+  - mysql
+  - redis
+  - kafka-kraft
+  - zookeeper
+  - minio
+  - java8
+maintainers:
+  - name: DevOps Engineering Team

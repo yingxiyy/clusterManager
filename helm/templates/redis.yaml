@@ -1,0 +1,173 @@
+{{- if .Values.redis.enabled }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: redis-credentials
+  labels:
+    app: redis
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  password: {{ .Values.redis.password | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  labels:
+    app: redis
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+data:
+  redis.conf: |
+    bind 0.0.0.0
+    port 6379
+    protected-mode no
+    dir /data
+    appendonly yes
+    appendfsync everysec
+    save 900 1
+    save 300 10
+    save 60 10000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels:
+    app: redis
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: redis
+      port: {{ .Values.redis.port }}
+      targetPort: 6379
+    {{- if .Values.redis.sentinel.enabled }}
+    - name: sentinel
+      port: {{ .Values.redis.sentinel.port }}
+      targetPort: 26379
+    {{- end }}
+  selector:
+    app: redis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-headless
+  labels:
+    app: redis
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  ports:
+    - name: redis
+      port: {{ .Values.redis.port }}
+    {{- if .Values.redis.sentinel.enabled }}
+    - name: sentinel
+      port: {{ .Values.redis.sentinel.port }}
+    {{- end }}
+  selector:
+    app: redis
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  labels:
+    app: redis
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  serviceName: redis-headless
+  replicas: {{ .Values.redis.replicas }}
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      initContainers:
+        - name: init-redis
+          image: busybox:1.36
+          command:
+            - /bin/sh
+            - -ce
+            - |
+              ORDINAL=$(echo ${HOSTNAME} | rev | cut -d'-' -f1 | rev)
+              cp /etc/redis/redis.conf /mnt/conf/redis.conf
+              echo "requirepass {{ .Values.redis.password }}" >> /mnt/conf/redis.conf
+              echo "masterauth {{ .Values.redis.password }}" >> /mnt/conf/redis.conf
+
+              if [ "$ORDINAL" != "0" ]; then
+                echo "replicaof redis-0.redis-headless.{{ .Release.Namespace }}.svc.cluster.local 6379" >> /mnt/conf/redis.conf
+              fi
+
+              {{- if .Values.redis.sentinel.enabled }}
+              cat <<EOF > /mnt/conf/sentinel.conf
+              port 26379
+              dir /tmp
+              sentinel monitor mymaster redis-0.redis-headless.{{ .Release.Namespace }}.svc.cluster.local 6379 {{ .Values.redis.sentinel.quorum }}
+              sentinel auth-pass mymaster {{ .Values.redis.password }}
+              sentinel down-after-milliseconds mymaster 5000
+              sentinel failover-timeout mymaster 10000
+              sentinel parallel-syncs mymaster 1
+              EOF
+              {{- end }}
+          volumeMounts:
+            - name: redis-config-vol
+              mountPath: /etc/redis
+            - name: generated-conf
+              mountPath: /mnt/conf
+      containers:
+        - name: redis
+          image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["redis-server", "/mnt/conf/redis.conf"]
+          ports:
+            - name: redis
+              containerPort: 6379
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: generated-conf
+              mountPath: /mnt/conf
+        {{- if .Values.redis.sentinel.enabled }}
+        - name: sentinel
+          image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["redis-sentinel", "/mnt/conf/sentinel.conf"]
+          ports:
+            - name: sentinel
+              containerPort: 26379
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          volumeMounts:
+            - name: generated-conf
+              mountPath: /mnt/conf
+        {{- end }}
+      volumes:
+        - name: redis-config-vol
+          configMap:
+            name: redis-config
+        - name: generated-conf
+          emptyDir: {}
+  {{- if .Values.redis.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: {{ .Values.global.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.redis.persistence.size }}
+  {{- end }}
+{{- end }}

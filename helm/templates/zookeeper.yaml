@@ -1,0 +1,104 @@
+{{- if .Values.zookeeper.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper
+  labels:
+    app: zookeeper
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: client
+      port: {{ .Values.zookeeper.clientPort }}
+      targetPort: 2181
+  selector:
+    app: zookeeper
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper-headless
+  labels:
+    app: zookeeper
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  ports:
+    - name: client
+      port: {{ .Values.zookeeper.clientPort }}
+    - name: peer
+      port: {{ .Values.zookeeper.peerPort }}
+    - name: leader-election
+      port: {{ .Values.zookeeper.leaderPort }}
+  selector:
+    app: zookeeper
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: zookeeper
+  labels:
+    app: zookeeper
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  serviceName: zookeeper-headless
+  replicas: {{ .Values.zookeeper.replicas }}
+  selector:
+    matchLabels:
+      app: zookeeper
+  template:
+    metadata:
+      labels:
+        app: zookeeper
+    spec:
+      containers:
+        - name: zookeeper
+          image: "{{ .Values.zookeeper.image.repository }}:{{ .Values.zookeeper.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command:
+            - /bin/bash
+            - -ce
+            - |
+              ORDINAL=$(echo ${HOSTNAME} | rev | cut -d'-' -f1 | rev)
+              MY_ID=$((ORDINAL + 1))
+              mkdir -p /data
+              echo "${MY_ID}" > /data/myid
+
+              cat <<EOF > /opt/zookeeper/conf/zoo.cfg
+              tickTime=2000
+              initLimit=10
+              syncLimit=5
+              dataDir=/data
+              clientPort={{ .Values.zookeeper.clientPort }}
+              4lw.commands.whitelist=*
+              {{- range $i, $e := until (int .Values.zookeeper.replicas) }}
+              server.{{ add $i 1 }}=zookeeper-{{ $i }}.zookeeper-headless.{{ $.Release.Namespace }}.svc.cluster.local:{{ $.Values.zookeeper.peerPort }}:{{ $.Values.zookeeper.leaderPort }}
+              {{- end }}
+              EOF
+
+              exec /opt/zookeeper/bin/zkServer.sh start-foreground
+          ports:
+            - name: client
+              containerPort: 2181
+            - name: peer
+              containerPort: 2888
+            - name: leader-election
+              containerPort: 3888
+          resources:
+            {{- toYaml .Values.zookeeper.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  {{- if .Values.zookeeper.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: {{ .Values.global.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.zookeeper.persistence.size }}
+  {{- end }}
+{{- end }}

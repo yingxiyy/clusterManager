@@ -1,0 +1,154 @@
+{{- if .Values.minio.enabled }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-credentials
+  labels:
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  root-user: {{ .Values.minio.rootUser | quote }}
+  root-password: {{ .Values.minio.rootPassword | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  labels:
+    app: minio
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: api
+      port: {{ .Values.minio.apiPort }}
+      targetPort: 9000
+    - name: console
+      port: {{ .Values.minio.consolePort }}
+      targetPort: 9001
+  selector:
+    app: minio
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-headless
+  labels:
+    app: minio
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  ports:
+    - name: api
+      port: 9000
+  selector:
+    app: minio
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  labels:
+    app: minio
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  serviceName: minio-headless
+  replicas: {{ .Values.minio.replicas }}
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+        - name: minio
+          image: "{{ .Values.minio.image.repository }}:{{ .Values.minio.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command:
+            - /bin/sh
+            - -ce
+            - |
+              minio server \
+              {{- if gt (int .Values.minio.replicas) 1 }}
+              http://minio-{0...{{ sub .Values.minio.replicas 1 }}}.minio-headless.{{ .Release.Namespace }}.svc.cluster.local/data \
+              {{- else }}
+              /data \
+              {{- end }}
+              --console-address :{{ .Values.minio.consolePort }}
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: root-password
+          ports:
+            - name: api
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          resources:
+            {{- toYaml .Values.minio.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  {{- if .Values.minio.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: {{ .Values.global.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.minio.persistence.size }}
+  {{- end }}
+---
+# S3 Bucket Initializer Job for Flink, MySQL, Mongo, Redis
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init-buckets
+  labels:
+    app: minio-init
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-minio
+          image: curlimages/curl:8.7.1
+          command:
+            - sh
+            - -c
+            - |
+              until curl -s http://minio:9000/minio/health/live; do
+                echo "Waiting for MinIO S3 cluster to be healthy...";
+                sleep 3;
+              done
+      containers:
+        - name: mc-create-buckets
+          image: minio/mc:latest
+          command:
+            - /bin/sh
+            - -ce
+            - |
+              mc alias set local http://minio:9000 {{ .Values.minio.rootUser }} {{ .Values.minio.rootPassword }}
+              mc mb --ignore-existing local/{{ .Values.global.s3.buckets.flink }}
+              mc mb --ignore-existing local/{{ .Values.global.s3.buckets.mysql }}
+              mc mb --ignore-existing local/{{ .Values.global.s3.buckets.mongodb }}
+              mc mb --ignore-existing local/{{ .Values.global.s3.buckets.redis }}
+              mc mb --ignore-existing local/{{ .Values.global.s3.buckets.kafka }}
+              echo "S3 Buckets initialized successfully."
+{{- end }}

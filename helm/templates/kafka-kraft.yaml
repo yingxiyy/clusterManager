@@ -1,0 +1,143 @@
+{{- if .Values.kafka.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  labels:
+    app: kafka
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: client
+      port: {{ .Values.kafka.ports.client }}
+      targetPort: 9092
+  selector:
+    app: kafka
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-headless
+  labels:
+    app: kafka
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  ports:
+    - name: client
+      port: {{ .Values.kafka.ports.client }}
+    - name: controller
+      port: {{ .Values.kafka.ports.controller }}
+    - name: internal
+      port: {{ .Values.kafka.ports.internal }}
+  selector:
+    app: kafka
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  labels:
+    app: kafka
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  serviceName: kafka-headless
+  replicas: {{ .Values.kafka.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      containers:
+        - name: kafka
+          image: "{{ .Values.kafka.image.repository }}:{{ .Values.kafka.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          env:
+            - name: CLUSTER_ID
+              value: {{ .Values.kafka.clusterId | quote }}
+            - name: KAFKA_REPLICAS
+              value: {{ .Values.kafka.replicas | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: KAFKA_JVM_PERFORMANCE_OPTS
+              value: "-server -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:InitiatingHeapOccupancyPercent=35 -XX:+ExplicitGCInvokesConcurrent"
+          command:
+            - /bin/bash
+            - -ce
+            - |
+              # Extract pod index as Node ID
+              NODE_ID=${HOSTNAME##*-}
+              echo "Starting Kafka KRaft Node ID: ${NODE_ID}"
+
+              # Construct dynamic KRaft quorum voter list from replicas
+              VOTERS=""
+              for i in $(seq 0 $(({{ .Values.kafka.replicas }} - 1))); do
+                if [ -n "$VOTERS" ]; then
+                  VOTERS="${VOTERS},"
+                fi
+                VOTERS="${VOTERS}${i}@kafka-${i}.kafka-headless.${POD_NAMESPACE}.svc.cluster.local:{{ .Values.kafka.ports.controller }}"
+              done
+              echo "KRaft Voters: ${VOTERS}"
+
+              DATA_DIR="/var/lib/kafka/data"
+              mkdir -p ${DATA_DIR}
+
+              # Format storage if metadata doesn't exist
+              if [ ! -f "${DATA_DIR}/meta.properties" ]; then
+                echo "Formatting Kafka KRaft storage with Cluster ID ${CLUSTER_ID}..."
+                /opt/kafka/bin/kafka-storage.sh format \
+                  -t "${CLUSTER_ID}" \
+                  -c /opt/kafka/config/kraft/server.properties \
+                  --ignore-formatted
+              fi
+
+              # Generate instance configuration
+              cat <<EOF > /tmp/server-kraft.properties
+              process.roles=broker,controller
+              node.id=${NODE_ID}
+              controller.quorum.voters=${VOTERS}
+              listeners=PLAINTEXT://:9092,CONTROLLER://:9093,INTERNAL://:9094
+              inter.broker.listener.name=INTERNAL
+              advertised.listeners=PLAINTEXT://kafka-${NODE_ID}.kafka-headless.${POD_NAMESPACE}.svc.cluster.local:9092,INTERNAL://kafka-${NODE_ID}.kafka-headless.${POD_NAMESPACE}.svc.cluster.local:9094
+              controller.listener.names=CONTROLLER
+              listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
+              log.dirs=${DATA_DIR}
+              num.partitions={{ .Values.kafka.config.numPartitions }}
+              default.replication.factor={{ .Values.kafka.config.defaultReplicationFactor }}
+              min.insync.replicas={{ .Values.kafka.config.minInsyncReplicas }}
+              log.retention.hours={{ .Values.kafka.config.logRetentionHours }}
+              auto.create.topics.enable=true
+              EOF
+
+              exec /opt/kafka/bin/kafka-server-start.sh /tmp/server-kraft.properties
+          ports:
+            - name: client
+              containerPort: 9092
+            - name: controller
+              containerPort: 9093
+            - name: internal
+              containerPort: 9094
+          resources:
+            {{- toYaml .Values.kafka.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/kafka/data
+  {{- if .Values.kafka.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: {{ .Values.global.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.kafka.persistence.size }}
+  {{- end }}
+{{- end }}

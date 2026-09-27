@@ -1,0 +1,143 @@
+{{- if .Values.flink.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flink-config
+  labels:
+    app: flink
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+data:
+  flink-conf.yaml: |
+    jobmanager.rpc.address: flink-jobmanager
+    jobmanager.rpc.port: {{ .Values.flink.jobManager.rpcPort }}
+    jobmanager.heap.size: {{ .Values.flink.jobManager.heapSize }}
+    taskmanager.heap.size: {{ .Values.flink.taskManager.heapSize }}
+    taskmanager.numberOfTaskSlots: {{ .Values.flink.taskManager.slotsPerTaskManager }}
+    parallelism.default: {{ mul .Values.flink.taskManager.replicas .Values.flink.taskManager.slotsPerTaskManager }}
+    rest.port: {{ .Values.flink.jobManager.uiPort }}
+    rest.address: 0.0.0.0
+    blob.server.port: {{ .Values.flink.jobManager.blobPort }}
+    queryable-state.server.port: {{ .Values.flink.jobManager.queryPort }}
+    
+    # S3 MinIO Checkpointing & Savepoints Storage (Java 8 s3-fs-hadoop / s3-fs-presto plugin)
+    {{- if .Values.flink.s3StateBackend.enabled }}
+    state.backend: filesystem
+    state.checkpoints.dir: {{ .Values.flink.s3StateBackend.checkpointDir }}
+    state.savepoints.dir: {{ .Values.flink.s3StateBackend.savepointDir }}
+    state.backend.incremental: true
+    s3.endpoint: {{ .Values.global.s3.endpoint }}
+    s3.path.style.access: true
+    s3.access-key: {{ .Values.global.s3.accessKey }}
+    s3.secret-key: {{ .Values.global.s3.secretKey }}
+    s3.ssl.enabled: {{ .Values.global.s3.ssl }}
+    {{- end }}
+---
+# JobManager Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-jobmanager
+  labels:
+    app: flink
+    component: jobmanager
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: rpc
+      port: {{ .Values.flink.jobManager.rpcPort }}
+    - name: blob
+      port: {{ .Values.flink.jobManager.blobPort }}
+    - name: ui
+      port: {{ .Values.flink.jobManager.uiPort }}
+  selector:
+    app: flink
+    component: jobmanager
+---
+# JobManager Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-jobmanager
+  labels:
+    app: flink
+    component: jobmanager
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.flink.jobManager.replicas }}
+  selector:
+    matchLabels:
+      app: flink
+      component: jobmanager
+  template:
+    metadata:
+      labels:
+        app: flink
+        component: jobmanager
+    spec:
+      containers:
+        - name: jobmanager
+          image: "{{ .Values.flink.image.repository }}:{{ .Values.flink.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["/opt/flink/bin/jobmanager.sh", "start-foreground"]
+          ports:
+            - containerPort: {{ .Values.flink.jobManager.rpcPort }}
+              name: rpc
+            - containerPort: {{ .Values.flink.jobManager.blobPort }}
+              name: blob
+            - containerPort: {{ .Values.flink.jobManager.uiPort }}
+              name: ui
+          resources:
+            {{- toYaml .Values.flink.jobManager.resources | nindent 12 }}
+          volumeMounts:
+            - name: flink-config-volume
+              mountPath: /opt/flink/conf/flink-conf.yaml
+              subPath: flink-conf.yaml
+      volumes:
+        - name: flink-config-volume
+          configMap:
+            name: flink-config
+---
+# TaskManager StatefulSet (Individual Extension Member: scale replicas easily)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: flink-taskmanager
+  labels:
+    app: flink
+    component: taskmanager
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  serviceName: flink-jobmanager
+  replicas: {{ .Values.flink.taskManager.replicas }}
+  selector:
+    matchLabels:
+      app: flink
+      component: taskmanager
+  template:
+    metadata:
+      labels:
+        app: flink
+        component: taskmanager
+    spec:
+      containers:
+        - name: taskmanager
+          image: "{{ .Values.flink.image.repository }}:{{ .Values.flink.image.tag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["/opt/flink/bin/taskmanager.sh", "start-foreground"]
+          ports:
+            - containerPort: {{ .Values.flink.taskManager.dataPort }}
+              name: data
+            - containerPort: {{ .Values.flink.taskManager.rpcPort }}
+              name: rpc
+          resources:
+            {{- toYaml .Values.flink.taskManager.resources | nindent 12 }}
+          volumeMounts:
+            - name: flink-config-volume
+              mountPath: /opt/flink/conf/flink-conf.yaml
+              subPath: flink-conf.yaml
+      volumes:
+        - name: flink-config-volume
+          configMap:
+            name: flink-config
+{{- end }}

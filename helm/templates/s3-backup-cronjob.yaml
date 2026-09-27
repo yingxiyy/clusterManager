@@ -1,0 +1,110 @@
+# ==============================================================================
+# S3 Backup CronJobs: Automated Scheduled Backup to Central MinIO S3
+# ==============================================================================
+{{- if and .Values.mysql.enabled .Values.mysql.backupToS3.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mysql-backup-to-s3
+  labels:
+    app: mysql-backup
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.mysql.backupToS3.schedule | quote }}
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: "{{ .Values.mysql.image.repository }}:{{ .Values.mysql.image.tag }}"
+              env:
+                - name: MYSQL_ROOT_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: mysql-credentials
+                      key: root-password
+                - name: S3_ENDPOINT
+                  value: {{ .Values.global.s3.endpoint | quote }}
+                - name: AWS_ACCESS_KEY_ID
+                  value: {{ .Values.global.s3.accessKey | quote }}
+                - name: AWS_SECRET_ACCESS_KEY
+                  value: {{ .Values.global.s3.secretKey | quote }}
+                - name: AWS_DEFAULT_REGION
+                  value: {{ .Values.global.s3.region | quote }}
+                - name: S3_BUCKET
+                  value: {{ .Values.global.s3.buckets.mysql | quote }}
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -eo pipefail
+                  TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+                  BACKUP_FILE="/tmp/mysql_backup_${TIMESTAMP}.sql.gz"
+                  echo "Taking full mysqldump of all databases..."
+                  mysqldump -h mysql-0.mysql-headless -u root -p"${MYSQL_ROOT_PASSWORD}" \
+                    --all-databases --single-transaction --quick --routines --triggers | gzip > "${BACKUP_FILE}"
+                  
+                  echo "Uploading to MinIO S3: s3://${S3_BUCKET}/mysql_${TIMESTAMP}.sql.gz..."
+                  aws --endpoint-url="${S3_ENDPOINT}" s3 cp "${BACKUP_FILE}" "s3://${S3_BUCKET}/mysql_${TIMESTAMP}.sql.gz"
+                  rm -f "${BACKUP_FILE}"
+                  echo "MySQL S3 backup complete."
+---
+{{- end }}
+{{- if and .Values.mongodb.enabled .Values.mongodb.backupToS3.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mongodb-backup-to-s3
+  labels:
+    app: mongodb-backup
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.mongodb.backupToS3.schedule | quote }}
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: "{{ .Values.mongodb.image.repository }}:{{ .Values.mongodb.image.tag }}"
+              env:
+                - name: MONGO_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: mongodb-auth
+                      key: root-password
+                - name: S3_ENDPOINT
+                  value: {{ .Values.global.s3.endpoint | quote }}
+                - name: AWS_ACCESS_KEY_ID
+                  value: {{ .Values.global.s3.accessKey | quote }}
+                - name: AWS_SECRET_ACCESS_KEY
+                  value: {{ .Values.global.s3.secretKey | quote }}
+                - name: S3_BUCKET
+                  value: {{ .Values.global.s3.buckets.mongodb | quote }}
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -eo pipefail
+                  TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+                  ARCHIVE_FILE="/tmp/mongo_backup_${TIMESTAMP}.archive.gz"
+                  echo "Running mongodump from replica set..."
+                  mongodump --host="mongodb-0.mongodb-headless:27017" \
+                    --username="admin" --password="${MONGO_PASSWORD}" \
+                    --authenticationDatabase="admin" \
+                    --archive="${ARCHIVE_FILE}" --gzip
+                  
+                  echo "Uploading to MinIO S3: s3://${S3_BUCKET}/mongo_${TIMESTAMP}.archive.gz..."
+                  aws --endpoint-url="${S3_ENDPOINT}" s3 cp "${ARCHIVE_FILE}" "s3://${S3_BUCKET}/mongo_${TIMESTAMP}.archive.gz"
+                  rm -f "${ARCHIVE_FILE}"
+                  echo "MongoDB S3 backup complete."
+{{- end }}
