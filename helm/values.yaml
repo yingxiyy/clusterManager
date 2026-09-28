@@ -133,24 +133,39 @@ kafka:
       memory: "4Gi"
 
 # ------------------------------------------------------------------------------
-# 4. MONGODB 8.0.9 (Ubuntu 22.04 base, 3-member Replica Set)
+# 4. MONGODB 8.0.9 (Ubuntu 22.04 base, Distributed Sharded Cluster 分片集群)
 # ------------------------------------------------------------------------------
 mongodb:
   enabled: true
+  mode: "sharded" # "sharded" (分片模式)
   image:
     repository: "mongo" # Official Docker Hub image (Ubuntu 22.04 base)
     tag: "8.0.9"
-  replicas: 3 # 3 member cluster for replica set quorum
-  replicaSetName: "rs0"
-  port: 27017
   auth:
     enabled: true
     rootUser: "admin"
     rootPassword: "mongoAdminPassword123"
     keyfileSecret: "mongodb-keyfile-secret"
-  persistence:
-    enabled: true
-    size: "30Gi"
+  # Mongos Query Routers (Stateless, Load Balanced Entrypoint)
+  mongos:
+    replicas: 2
+    port: 27017
+  # Config Server ReplicaSet (CSRS, Metadata & Chunk Routing)
+  configsvr:
+    replicas: 3
+    port: 27019
+    replicaSetName: "configReplSet"
+    persistence:
+      enabled: true
+      size: "10Gi"
+  # Shard Clusters (Data Storage with Horizontal Sharding)
+  shards:
+    count: 2 # 2 Shards default (Shard 0 & Shard 1, extensible to N)
+    replicasPerShard: 3 # 3 members per shard replica set (1 Primary + 2 Secondaries)
+    port: 27018
+    persistence:
+      enabled: true
+      size: "30Gi"
   resources:
     requests:
       cpu: "500m"
@@ -222,14 +237,14 @@ redis:
     schedule: "0 4 * * *"
 
 # ------------------------------------------------------------------------------
-# 7. APACHE ZOOKEEPER 3.6.3 (Java 1.8, Standalone or Fallback)
+# 7. APACHE ZOOKEEPER 3.6.3 (Java 1.8 Quorum Cluster)
 # ------------------------------------------------------------------------------
 zookeeper:
-  enabled: false # Disabled by default since Kafka is upgraded to KRaft! Toggle to true if needed.
+  enabled: true # Active 3-member ZooKeeper 3.6.3 cluster
   image:
-    repository: "zookeeper" # Official Docker Hub image
+    repository: "zookeeper" # Official Docker Hub image (Java 8)
     tag: "3.6.3"
-  replicas: 3 # 3 members quorum
+  replicas: 3 # 3 members quorum (1 Leader + 2 Followers)
   clientPort: 2181
   peerPort: 2888
   leaderPort: 3888
