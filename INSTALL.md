@@ -345,7 +345,7 @@ mvn clean package -DskipTests
 ```
 通用微服务 Dockerfile 范式：
 ```dockerfile
-FROM eclipse-temurin:17-jre-alpine # 或 openjdk:8-jre-alpine
+FROM eclipse-temurin:21-jre-alpine # Java 21 LTS 官方轻量运行时镜像
 WORKDIR /app
 ARG JAR_FILE=target/*.jar
 COPY ${JAR_FILE} app.jar
@@ -647,9 +647,9 @@ kubectl get nodes
 本项目已将所有第三方组件镜像直接对接 **Global Docker Hub 官方镜像**，无需自行在本地构建 Dockerfile 即可启动：
 
 - **MongoDB**: `mongo:8.0.9` (分片集群模式 Sharded Cluster: 2 Mongos 路由器 + 3 节点 ConfigServer CSRS + 2 分片 Shard0/Shard1 × 3 节点高可用)
-- **Flink**: `flink:1.9.3-scala_2.12` (Java 8, 1 JobManager + N TaskManagers, 专职处理实时事件流计算，无需参与数据库副本复制)
-- **Kafka**: `apache/kafka:3.7.2` (KRaft 模式, Java 8 兼容, 3 节点 Raft 仲裁, 直连 MinIO S3 做数据归档)
-- **ZooKeeper**: `zookeeper:3.6.3` (Java 8, 3 节点仲裁集群, client: 2181, peer: 2888, leader: 3888)
+- **Flink**: `flink:2.0.0-java21` (Java 21 LTS, 1 JobManager + N TaskManagers, 专职处理实时事件流计算，无需参与数据库副本复制)
+- **Kafka**: `apache/kafka:3.9.0` (KRaft 模式, Java 21 LTS 推荐, 3 节点 Raft 仲裁, 直连 MinIO S3 做数据归档)
+- **ZooKeeper**: `zookeeper:3.9.3` (Java 21 LTS 兼容, 3 节点仲裁集群, client: 2181, peer: 2888, leader: 3888)
 - **MySQL**: `mysql:8.4.6` (3 节点 GTID 主从复制)
 - **Redis**: `redis:6.2.6-alpine` (3 节点 + Sentinel 仲裁)
 - **MinIO**: `minio/minio:RELEASE.2024-04-18T19-09-19Z` (分布式 S3 存储)

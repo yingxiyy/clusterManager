@@ -1,0 +1,266 @@
+# ==============================================================================
+# CloudCluster Stack - Production Values Configuration
+# Supported Components:
+#   - MinIO Distributed S3 Cluster (central S3 backend)
+#   - Apache Flink 1.9.3 (Java 8 + MinIO S3 Checkpointing)
+#   - Apache Kafka (KRaft mode, 3-member cluster, Java 8 compatible)
+#   - MongoDB 8.0.9 (Ubuntu 22.04 + mongo-tools, 3-member replica set)
+#   - MySQL 8.4.6 (3-member cluster + S3 automated backup sidecar)
+#   - Redis 6.2.6 (3-member Sentinel HA cluster + S3 persistence)
+#   - Apache ZooKeeper 3.6.3 (Java 8, optional if not using KRaft)
+# ==============================================================================
+
+global:
+  environment: "production"
+  storageClass: "standard"
+  imagePullPolicy: "IfNotPresent"
+  
+  # Central MinIO S3 Storage Settings
+  s3:
+    endpoint: "http://minio:9000"
+    publicEndpoint: "http://minio-api.cluster.local:9000"
+    accessKey: "minioAdmin"
+    secretKey: "minioAdminPassword123"
+    region: "us-east-1"
+    pathStyle: true
+    ssl: false
+    buckets:
+      flink: "flink-checkpoints"
+      mysql: "mysql-backups"
+      mongodb: "mongodb-backups"
+      redis: "redis-backups"
+      kafka: "kafka-tiered-storage"
+
+# ------------------------------------------------------------------------------
+# 1. MINIO DISTRIBUTED S3 CLUSTER
+# ------------------------------------------------------------------------------
+minio:
+  enabled: true
+  replicas: 4 # MinIO distributed mode requires minimum 4 drives/nodes for quorum
+  image:
+    repository: "minio/minio"
+    tag: "RELEASE.2024-04-18T19-09-19Z"
+  consolePort: 9001
+  apiPort: 9000
+  rootUser: "minioAdmin"
+  rootPassword: "minioAdminPassword123"
+  persistence:
+    enabled: true
+    size: "50Gi"
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+
+# ------------------------------------------------------------------------------
+# 2. APACHE FLINK 2.0 (Java 21 LTS + S3 MinIO Checkpoints)
+# ------------------------------------------------------------------------------
+flink:
+  enabled: true
+  image:
+    repository: "flink" # Official Docker Hub image
+    tag: "2.0.0-java21" # Upgraded to Java 21 LTS runtime (or flink:java21)
+  jobManager:
+    replicas: 1
+    rpcPort: 6123
+    blobPort: 6124
+    queryPort: 6125
+    uiPort: 8081
+    heapSize: "1024m"
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1.5Gi"
+      limits:
+        cpu: "1500m"
+        memory: "2.5Gi"
+  
+  # TaskManager Extension: easily scale task workers independently!
+  taskManager:
+    replicas: 3 # Individual extension member: scale to 5, 10, or more!
+    slotsPerTaskManager: 4
+    dataPort: 6121
+    rpcPort: 6122
+    heapSize: "2048m"
+    resources:
+      requests:
+        cpu: "1000m"
+        memory: "3Gi"
+      limits:
+        cpu: "4000m"
+        memory: "6Gi"
+        
+  s3StateBackend:
+    enabled: true
+    checkpointDir: "s3://flink-checkpoints/checkpoints"
+    savepointDir: "s3://flink-checkpoints/savepoints"
+    checkpointIntervalMs: 60000
+  auth:
+    enabled: true
+    adminUser: "flinkAdmin"
+    adminPassword: "flinkAdminPassword123"
+
+# ------------------------------------------------------------------------------
+# 3. APACHE KAFKA 3.9 (KRaft mode, 3-member cluster, Java 21 LTS + SASL Authentication)
+# ------------------------------------------------------------------------------
+kafka:
+  enabled: true
+  image:
+    repository: "apache/kafka" # Official Apache Kafka Docker Hub image
+    tag: "3.9.0" # Official Apache Kafka 3.9 (Java 21 LTS Recommended)
+  replicas: 3 # 3 members for Raft controller & broker quorum
+  clusterId: "4L622nShTZaIO_BL5JDU7Q" # 16-byte base64 cluster ID
+  kraft:
+    enabled: true # Upgraded to KRaft mode (no ZooKeeper required)
+    combinedRoles: true # Each node is broker + controller
+  auth:
+    enabled: true
+    saslMechanism: "PLAIN"
+    adminUser: "admin"
+    adminPassword: "kafkaAdminPassword123"
+    clientUser: "app_user"
+    clientPassword: "kafkaAppPassword123"
+  ports:
+    client: 9092
+    controller: 9093
+    internal: 9094
+  persistence:
+    enabled: true
+    size: "30Gi"
+  config:
+    numPartitions: 3
+    defaultReplicationFactor: 3
+    minInsyncReplicas: 2
+    logRetentionHours: 168
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+
+# ------------------------------------------------------------------------------
+# 4. MONGODB 8.0.9 (Ubuntu 22.04 base, 3-Member HA ReplicaSet 副本集群)
+# ------------------------------------------------------------------------------
+mongodb:
+  enabled: true
+  mode: "replicaset" # "replicaset" (3-member HA 副本集群模式: rs0)
+  image:
+    repository: "mongo" # Official Docker Hub image (Ubuntu 22.04 base)
+    tag: "8.0.9"
+  replicaSetName: "rs0"
+  replicas: 3 # 3 members across 3 physical hosts (1 Primary + 2 Secondaries)
+  port: 27017
+  auth:
+    enabled: true
+    rootUser: "admin"
+    rootPassword: "mongoAdminPassword123"
+    appUser: "mongo_app"
+    appPassword: "mongoAppPassword123"
+    keyfileSecret: "mongodb-keyfile-secret"
+  persistence:
+    enabled: true
+    size: "30Gi"
+    storageClass: "local-storage" # Local NVMe/SSD disk per physical machine
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+  backupToS3:
+    enabled: true
+    schedule: "0 2 * * *" # Daily at 02:00 UTC (S3 冷备份与 Oplog 归档)
+    retentionCount: 3 # 严格仅保留最新 3 份数据 (滚动轮转自动清理旧版本)
+
+# ------------------------------------------------------------------------------
+# 5. MYSQL 8.4.6 (3-member Cluster + S3 Automated Backup)
+# ------------------------------------------------------------------------------
+mysql:
+  enabled: true
+  image:
+    repository: "mysql" # Official Docker Hub image
+    tag: "8.4.6"
+  replicas: 3 # 3 members (Primary mysql-0, Secondary replicas mysql-1, mysql-2)
+  port: 3306
+  rootPassword: "mysqlRootPassword123"
+  appUser: "app_user"
+  appPassword: "mysqlAppPassword123"
+  replicationUser: "repl_user"
+  replicationPassword: "replPassword123"
+  database: "appdb"
+  persistence:
+    enabled: true
+    size: "30Gi"
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+  backupToS3:
+    enabled: true
+    schedule: "0 3 * * *" # Daily at 03:00 UTC
+    retentionCount: 3 # 严格仅保留最新 3 份数据 (滚动轮转自动清理旧版本)
+
+# ------------------------------------------------------------------------------
+# 6. REDIS 6.2.6 (3-member Sentinel HA Cluster + S3 Snapshots)
+# ------------------------------------------------------------------------------
+redis:
+  enabled: true
+  image:
+    repository: "redis" # Official Docker Hub image
+    tag: "6.2.6-alpine"
+  replicas: 3 # 3 members (1 Primary + 2 Replicas)
+  sentinel:
+    enabled: true
+    port: 26379
+    quorum: 2
+  port: 6379
+  password: "redisAuthPassword123"
+  persistence:
+    enabled: true
+    size: "10Gi"
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+  backupToS3:
+    enabled: true
+    schedule: "0 4 * * *"
+
+# ------------------------------------------------------------------------------
+# 7. APACHE ZOOKEEPER 3.9.3 (Java 21 LTS Quorum Cluster + SASL Authentication)
+# ------------------------------------------------------------------------------
+zookeeper:
+  enabled: true # Active 3-member ZooKeeper 3.9.3 cluster
+  image:
+    repository: "zookeeper" # Official Docker Hub image (Java 21 compatible)
+    tag: "3.9.3"
+  replicas: 3 # 3 members quorum (1 Leader + 2 Followers)
+  auth:
+    enabled: true
+    adminUser: "zkAdmin"
+    adminPassword: "zkAdminPassword123"
+  clientPort: 2181
+  peerPort: 2888
+  leaderPort: 3888
+  persistence:
+    enabled: true
+    size: "10Gi"
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "1Gi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
