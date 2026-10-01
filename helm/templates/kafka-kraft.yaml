@@ -1,5 +1,19 @@
 {{- if .Values.kafka.enabled }}
 apiVersion: v1
+kind: Secret
+metadata:
+  name: kafka-credentials
+  labels:
+    app: kafka
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  admin-user: {{ .Values.kafka.auth.adminUser | default "admin" | quote }}
+  admin-password: {{ .Values.kafka.auth.adminPassword | default "kafkaAdminPassword123" | quote }}
+  client-user: {{ .Values.kafka.auth.clientUser | default "app_user" | quote }}
+  client-password: {{ .Values.kafka.auth.clientPassword | default "kafkaAppPassword123" | quote }}
+---
+apiVersion: v1
 kind: Service
 metadata:
   name: kafka
@@ -98,16 +112,36 @@ spec:
                   --ignore-formatted
               fi
 
+              # Generate JAAS configuration for SASL_PLAINTEXT authentication
+              cat <<EOF > /tmp/kafka_server_jaas.conf
+              KafkaServer {
+                  org.apache.kafka.common.security.plain.PlainLoginModule required
+                  username="{{ .Values.kafka.auth.adminUser | default "admin" }}"
+                  password="{{ .Values.kafka.auth.adminPassword | default "kafkaAdminPassword123" }}"
+                  user_{{ .Values.kafka.auth.adminUser | default "admin" }}="{{ .Values.kafka.auth.adminPassword | default "kafkaAdminPassword123" }}"
+                  user_{{ .Values.kafka.auth.clientUser | default "app_user" }}="{{ .Values.kafka.auth.clientPassword | default "kafkaAppPassword123" }}";
+              };
+              Client {
+                  org.apache.kafka.common.security.plain.PlainLoginModule required
+                  username="{{ .Values.kafka.auth.adminUser | default "admin" }}"
+                  password="{{ .Values.kafka.auth.adminPassword | default "kafkaAdminPassword123" }}";
+              };
+              EOF
+
+              export KAFKA_OPTS="-Djava.security.auth.login.config=/tmp/kafka_server_jaas.conf"
+
               # Generate instance configuration
               cat <<EOF > /tmp/server-kraft.properties
               process.roles=broker,controller
               node.id=${NODE_ID}
               controller.quorum.voters=${VOTERS}
-              listeners=PLAINTEXT://:9092,CONTROLLER://:9093,INTERNAL://:9094
+              listeners=SASL_PLAINTEXT://:9092,CONTROLLER://:9093,INTERNAL://:9094
               inter.broker.listener.name=INTERNAL
-              advertised.listeners=PLAINTEXT://kafka-${NODE_ID}.kafka-headless.${POD_NAMESPACE}.svc.cluster.local:9092,INTERNAL://kafka-${NODE_ID}.kafka-headless.${POD_NAMESPACE}.svc.cluster.local:9094
+              sasl.enabled.mechanisms=PLAIN
+              sasl.mechanism.inter.broker.protocol=PLAIN
+              advertised.listeners=SASL_PLAINTEXT://kafka-${NODE_ID}.kafka-headless.${POD_NAMESPACE}.svc.cluster.local:9092,INTERNAL://kafka-${NODE_ID}.kafka-headless.${POD_NAMESPACE}.svc.cluster.local:9094
               controller.listener.names=CONTROLLER
-              listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
+              listener.security.protocol.map=CONTROLLER:PLAINTEXT,SASL_PLAINTEXT:SASL_PLAINTEXT,INTERNAL:PLAINTEXT
               log.dirs=${DATA_DIR}
               num.partitions={{ .Values.kafka.config.numPartitions }}
               default.replication.factor={{ .Values.kafka.config.defaultReplicationFactor }}

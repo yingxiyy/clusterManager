@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Server, Database, Cloud, HardDrive, Cpu, Terminal, Copy, Check, 
   Layers, Shield, RefreshCw, Play, Settings, Download, ExternalLink,
@@ -65,7 +65,7 @@ interface WorkerCliModalData {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'k8s_nodes' | 'extensions' | 'k9s' | 'topology' | 'storage' | 'values' | 'manifests' | 'runbook'>('k8s_nodes');
+  const [activeTab, setActiveTab] = useState<'k8s_nodes' | 'credentials' | 'extensions' | 'k9s' | 'topology' | 'storage' | 'values' | 'manifests' | 'runbook'>('k8s_nodes');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   
   // Execution Mode: Backend Direct execution vs Manual CLI mode
@@ -75,18 +75,82 @@ export default function App() {
   const [flinkTaskManagers, setFlinkTaskManagers] = useState<number>(3);
   const [kafkaReplicas, setKafkaReplicas] = useState<number>(3);
   const [zkReplicas, setZkReplicas] = useState<number>(3);
-  const [mongoShardsCount, setMongoShardsCount] = useState<number>(2); // 2 Shards default (Shard 0 & Shard 1)
-  const [mongoMongosReplicas, setMongoMongosReplicas] = useState<number>(2); // 2 Mongos query routers
-  const [mongoConfigReplicas, setMongoConfigReplicas] = useState<number>(3); // 3 Config servers (CSRS)
-  const [mongoNodesPerShard, setMongoNodesPerShard] = useState<number>(3); // 3 replicas per shard
+  const [mongoReplicas, setMongoReplicas] = useState<number>(3); // 3-member ReplicaSet (rs0) across 3 physical hosts
   const [mysqlReplicas, setMysqlReplicas] = useState<number>(3);
   const [redisReplicas, setRedisReplicas] = useState<number>(3);
   const [minioReplicas, setMinioReplicas] = useState<number>(4);
   const [useKraft, setUseKraft] = useState<boolean>(true);
   const [enableZookeeper, setEnableZookeeper] = useState<boolean>(true);
   const [s3Endpoint, setS3Endpoint] = useState<string>('http://minio:9000');
-  const [s3AccessKey, setS3AccessKey] = useState<string>('minioAdmin');
-  const [s3SecretKey, setS3SecretKey] = useState<string>('minioAdminPassword123');
+
+  // Master Initial Cluster Credentials State (Enforced Auth on All Components)
+  const [minioUser, setMinioUser] = useState<string>('minioAdmin');
+  const [minioPassword, setMinioPassword] = useState<string>('minioAdminPassword123');
+
+  const [mysqlRootPassword, setMysqlRootPassword] = useState<string>('mysqlRootPassword123');
+  const [mysqlAppUser, setMysqlAppUser] = useState<string>('app_user');
+  const [mysqlAppPassword, setMysqlAppPassword] = useState<string>('mysqlAppPassword123');
+  const [mysqlReplPassword, setMysqlReplPassword] = useState<string>('replPassword123');
+
+  const [mongoRootUser, setMongoRootUser] = useState<string>('admin');
+  const [mongoRootPassword, setMongoRootPassword] = useState<string>('mongoAdminPassword123');
+  const [mongoAppUser, setMongoAppUser] = useState<string>('mongo_app');
+  const [mongoAppPassword, setMongoAppPassword] = useState<string>('mongoAppPassword123');
+
+  const [redisPassword, setRedisPassword] = useState<string>('redisAuthPassword123');
+
+  const [kafkaAdminUser, setKafkaAdminUser] = useState<string>('admin');
+  const [kafkaAdminPassword, setKafkaAdminPassword] = useState<string>('kafkaAdminPassword123');
+  const [kafkaAppUser, setKafkaAppUser] = useState<string>('app_user');
+  const [kafkaAppPassword, setKafkaAppPassword] = useState<string>('kafkaAppPassword123');
+
+  const [zkAdminUser, setZkAdminUser] = useState<string>('zkAdmin');
+  const [zkAdminPassword, setZkAdminPassword] = useState<string>('zkAdminPassword123');
+
+  const [flinkAdminUser, setFlinkAdminUser] = useState<string>('flinkAdmin');
+  const [flinkAdminPassword, setFlinkAdminPassword] = useState<string>('flinkAdminPassword123');
+
+  const [showAllPasswords, setShowAllPasswords] = useState<boolean>(false);
+  const [isSavingCredentials, setIsSavingCredentials] = useState<boolean>(false);
+  const [selectedAppLang, setSelectedAppLang] = useState<'spring' | 'zookeeper' | 'python' | 'nodejs' | 'go'>('spring');
+  const [customTargetDb, setCustomTargetDb] = useState<string>('appdb');
+
+  // External Git Connectivity State
+  const [gitTestUrl, setGitTestUrl] = useState<string>('https://github.com/torvalds/linux.git');
+  const [gitTestLoading, setGitTestLoading] = useState<boolean>(false);
+  const [gitTestResult, setGitTestResult] = useState<{
+    success: boolean;
+    accessible: boolean;
+    durationMs?: number;
+    output?: string;
+    message?: string;
+    error?: string;
+    suggestion?: string;
+  } | null>(null);
+
+  const testGitConnectivity = async (targetOverride?: string) => {
+    const url = targetOverride || gitTestUrl;
+    setGitTestLoading(true);
+    setGitTestResult(null);
+    try {
+      const res = await fetch('/api/git/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      const data = await res.json();
+      setGitTestResult(data);
+    } catch (e: any) {
+      setGitTestResult({
+        success: false,
+        accessible: false,
+        error: e.message,
+        suggestion: '无法连接后端探查服务，请确认后端 3000 端口服务正常。'
+      });
+    } finally {
+      setGitTestLoading(false);
+    }
+  };
 
   // Confirmation Modal State (Required for add/remove node, Kafka, Mongo, Flink etc.)
   const [confirmModal, setConfirmModal] = useState<ConfirmModalData>({
@@ -110,6 +174,8 @@ export default function App() {
   const [netInterface, setNetInterface] = useState<string>('auto');
   const [isUpdatingVip, setIsUpdatingVip] = useState<boolean>(false);
   const [vipUpdateNotice, setVipUpdateNotice] = useState<string | null>(null);
+  const [isSimulatorMode, setIsSimulatorMode] = useState<boolean>(false);
+  const [storageSolutionTab, setStorageSolutionTab] = useState<'replica' | 'distributed' | 's3_hybrid'>('s3_hybrid');
   const [vipUpdateResult, setVipUpdateResult] = useState<{
     isOpen: boolean;
     oldEndpoint: string;
@@ -315,6 +381,325 @@ export default function App() {
     setTimeout(() => setCopiedId(null), 2500);
   };
 
+  // Sync backend simulator mode configuration and initial credentials on component mount
+  useEffect(() => {
+    fetch('/api/config')
+      .then(res => res.json())
+      .then(data => {
+        if (typeof data.simulator === 'boolean') {
+          setIsSimulatorMode(data.simulator);
+        }
+      })
+      .catch(() => {});
+
+    // Hydrate saved credentials from backend if available
+    fetch('/api/credentials')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.credentials) {
+          const c = data.credentials;
+          if (c.MINIO_ROOT_USER) setMinioUser(c.MINIO_ROOT_USER);
+          if (c.MINIO_ROOT_PASSWORD) setMinioPassword(c.MINIO_ROOT_PASSWORD);
+          if (c.MYSQL_ROOT_PASSWORD) setMysqlRootPassword(c.MYSQL_ROOT_PASSWORD);
+          if (c.MYSQL_APP_USER) setMysqlAppUser(c.MYSQL_APP_USER);
+          if (c.MYSQL_APP_PASSWORD) setMysqlAppPassword(c.MYSQL_APP_PASSWORD);
+          if (c.MYSQL_REPL_PASSWORD) setMysqlReplPassword(c.MYSQL_REPL_PASSWORD);
+          if (c.MONGO_ROOT_USER) setMongoRootUser(c.MONGO_ROOT_USER);
+          if (c.MONGO_ROOT_PASSWORD) setMongoRootPassword(c.MONGO_ROOT_PASSWORD);
+          if (c.MONGO_APP_USER) setMongoAppUser(c.MONGO_APP_USER);
+          if (c.MONGO_APP_PASSWORD) setMongoAppPassword(c.MONGO_APP_PASSWORD);
+          if (c.REDIS_PASSWORD) setRedisPassword(c.REDIS_PASSWORD);
+          if (c.KAFKA_ADMIN_USER) setKafkaAdminUser(c.KAFKA_ADMIN_USER);
+          if (c.KAFKA_ADMIN_PASSWORD) setKafkaAdminPassword(c.KAFKA_ADMIN_PASSWORD);
+          if (c.KAFKA_CLIENT_USER) setKafkaAppUser(c.KAFKA_CLIENT_USER);
+          if (c.KAFKA_CLIENT_PASSWORD) setKafkaAppPassword(c.KAFKA_CLIENT_PASSWORD);
+          if (c.ZK_ADMIN_USER) setZkAdminUser(c.ZK_ADMIN_USER);
+          if (c.ZK_ADMIN_PASSWORD) setZkAdminPassword(c.ZK_ADMIN_PASSWORD);
+          if (c.FLINK_ADMIN_USER) setFlinkAdminUser(c.FLINK_ADMIN_USER);
+          if (c.FLINK_ADMIN_PASSWORD) setFlinkAdminPassword(c.FLINK_ADMIN_PASSWORD);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const toggleSimulatorMode = async () => {
+    const nextVal = !isSimulatorMode;
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ simulator: nextVal })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setIsSimulatorMode(data.simulator);
+        setProvisioningMessage(data.message);
+        setTimeout(() => setProvisioningMessage(null), 5000);
+      }
+    } catch (e) {
+      setIsSimulatorMode(nextVal);
+    }
+  };
+
+  // Save current credentials to backend credentials.env & helm/custom-credentials.yaml
+  const saveCredentialsToServer = async () => {
+    setIsSavingCredentials(true);
+    try {
+      const payload = {
+        MINIO_ROOT_USER: minioUser,
+        MINIO_ROOT_PASSWORD: minioPassword,
+        MYSQL_ROOT_PASSWORD: mysqlRootPassword,
+        MYSQL_APP_USER: mysqlAppUser,
+        MYSQL_APP_PASSWORD: mysqlAppPassword,
+        MYSQL_REPL_PASSWORD: mysqlReplPassword,
+        MONGO_ROOT_USER: mongoRootUser,
+        MONGO_ROOT_PASSWORD: mongoRootPassword,
+        MONGO_APP_USER: mongoAppUser,
+        MONGO_APP_PASSWORD: mongoAppPassword,
+        REDIS_PASSWORD: redisPassword,
+        KAFKA_ADMIN_USER: kafkaAdminUser,
+        KAFKA_ADMIN_PASSWORD: kafkaAdminPassword,
+        KAFKA_CLIENT_USER: kafkaAppUser,
+        KAFKA_CLIENT_PASSWORD: kafkaAppPassword,
+        ZK_ADMIN_USER: zkAdminUser,
+        ZK_ADMIN_PASSWORD: zkAdminPassword,
+        FLINK_ADMIN_USER: flinkAdminUser,
+        FLINK_ADMIN_PASSWORD: flinkAdminPassword,
+        K8S_JOIN_TOKEN: 'abcdef.0123456789abcdef'
+      };
+
+      const res = await fetch('/api/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credentials: payload })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setProvisioningMessage('✅ [Credentials Vault]: 已成功保存并同步初始凭证到 credentials.env 与 helm/custom-credentials.yaml！');
+      } else {
+        setProvisioningMessage(`❌ 保存凭证失败: ${data.error || 'Unknown error'}`);
+      }
+    } catch (err: any) {
+      setProvisioningMessage(`❌ 同步凭证接口异常: ${err.message}`);
+    } finally {
+      setIsSavingCredentials(false);
+      setTimeout(() => setProvisioningMessage(null), 5000);
+    }
+  };
+
+  // Download credentials as .env file
+  const downloadCredentialsEnv = () => {
+    const envContent = `# CloudCluster Initial Authentication Credentials (.env)
+# MinIO S3
+MINIO_ROOT_USER=${minioUser}
+MINIO_ROOT_PASSWORD=${minioPassword}
+
+# MySQL 8.4
+MYSQL_ROOT_PASSWORD=${mysqlRootPassword}
+MYSQL_APP_USER=${mysqlAppUser}
+MYSQL_APP_PASSWORD=${mysqlAppPassword}
+MYSQL_REPL_PASSWORD=${mysqlReplPassword}
+
+# MongoDB 8.0 (ReplicaSet rs0)
+MONGO_ROOT_USER=${mongoRootUser}
+MONGO_ROOT_PASSWORD=${mongoRootPassword}
+MONGO_APP_USER=${mongoAppUser}
+MONGO_APP_PASSWORD=${mongoAppPassword}
+
+# Redis 6.2
+REDIS_PASSWORD=${redisPassword}
+
+# Kafka 3.7
+KAFKA_ADMIN_USER=${kafkaAdminUser}
+KAFKA_ADMIN_PASSWORD=${kafkaAdminPassword}
+KAFKA_CLIENT_USER=${kafkaAppUser}
+KAFKA_CLIENT_PASSWORD=${kafkaAppPassword}
+
+# ZooKeeper 3.6
+ZK_ADMIN_USER=${zkAdminUser}
+ZK_ADMIN_PASSWORD=${zkAdminPassword}
+
+# Flink 1.9
+FLINK_ADMIN_USER=${flinkAdminUser}
+FLINK_ADMIN_PASSWORD=${flinkAdminPassword}
+`;
+    const blob = new Blob([envContent], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'credentials.env';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setProvisioningMessage('💾 [Export]: 已成功下载 credentials.env 环境变量文件！');
+    setTimeout(() => setProvisioningMessage(null), 4000);
+  };
+
+  // Helper to generate a strong random 16-character alphanumeric password
+  const generateRandomPassword = () => {
+    const chars = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!#%*';
+    let pwd = '';
+    for (let i = 0; i < 16; i++) {
+      pwd += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return pwd;
+  };
+
+  // One-click batch generate secure random passwords for all services
+  const generateAllRandomPasswords = () => {
+    setMinioPassword(generateRandomPassword());
+    setMysqlRootPassword(generateRandomPassword());
+    setMysqlAppPassword(generateRandomPassword());
+    setMysqlReplPassword(generateRandomPassword());
+    setMongoRootPassword(generateRandomPassword());
+    setMongoAppPassword(generateRandomPassword());
+    setRedisPassword(generateRandomPassword());
+    setKafkaAdminPassword(generateRandomPassword());
+    setKafkaAppPassword(generateRandomPassword());
+    setZkAdminPassword(generateRandomPassword());
+    setFlinkAdminPassword(generateRandomPassword());
+    setProvisioningMessage('🔑 [Credentials Vault]: 已为所有 8 大服务一键生成 16 位高强度安全密码！');
+    setTimeout(() => setProvisioningMessage(null), 6000);
+  };
+
+  // Reset to default development passwords
+  const resetDefaultCredentials = () => {
+    setMinioUser('minioAdmin');
+    setMinioPassword('minioAdminPassword123');
+    setMysqlRootPassword('mysqlRootPassword123');
+    setMysqlAppUser('app_user');
+    setMysqlAppPassword('mysqlAppPassword123');
+    setMysqlReplPassword('replPassword123');
+    setMongoRootUser('admin');
+    setMongoRootPassword('mongoAdminPassword123');
+    setMongoAppUser('mongo_app');
+    setMongoAppPassword('mongoAppPassword123');
+    setRedisPassword('redisAuthPassword123');
+    setKafkaAdminUser('admin');
+    setKafkaAdminPassword('kafkaAdminPassword123');
+    setKafkaAppUser('app_user');
+    setKafkaAppPassword('kafkaAppPassword123');
+    setZkAdminUser('zkAdmin');
+    setZkAdminPassword('zkAdminPassword123');
+    setFlinkAdminUser('flinkAdmin');
+    setFlinkAdminPassword('flinkAdminPassword123');
+    setProvisioningMessage('🔄 [Credentials Vault]: 所有服务账号密码已重置为标准默认凭证。');
+    setTimeout(() => setProvisioningMessage(null), 5000);
+  };
+
+  // Copy comprehensive credentials sheet
+  const copyAllCredentialsSheet = () => {
+    const sheet = `# ==============================================================================
+# CloudCluster Master Initial Credentials Sheet (初始安装账号密码汇总清单)
+# VIP Gateway: ${vipIp} (Port 6443 / Keepalived + HAProxy)
+# ==============================================================================
+
+1. MinIO S3 Object Storage (Port 9000 API / Port 9001 Console)
+   Root User:     ${minioUser}
+   Root Password: ${minioPassword}
+   Console URL:   http://${vipIp}:9001
+
+2. MySQL 8.4 Database (Port 3306)
+   Root User:     root
+   Root Password: ${mysqlRootPassword}
+   App User:      ${mysqlAppUser}
+   App Password:  ${mysqlAppPassword}
+   Replica User:  repl_user / ${mysqlReplPassword}
+   Database:      appdb
+
+3. MongoDB 8.0 3-Member ReplicaSet rs0 (Port 27017)
+   Admin User:    ${mongoRootUser}
+   Admin Password:${mongoRootPassword}
+   App User:      ${mongoAppUser}
+   App Password:  ${mongoAppPassword}
+   Keyfile:       mongodb-keyfile-secret
+
+4. Redis 6.2 Sentinel Cache (Port 6379 / Sentinel 26379)
+   Auth Password: ${redisPassword}
+   MasterAuth:    ${redisPassword}
+
+5. Apache Kafka 3.7 KRaft (Port 9092 SASL_PLAINTEXT)
+   Admin User:    ${kafkaAdminUser}
+   Admin Password:${kafkaAdminPassword}
+   Client User:   ${kafkaAppUser}
+   Client Password:${kafkaAppPassword}
+   Security:      SASL_PLAINTEXT (PlainLoginModule)
+
+6. Apache ZooKeeper 3.6.3 (Port 2181)
+   Admin User:    ${zkAdminUser}
+   Admin Password:${zkAdminPassword}
+   Security:      SASL Digest Auth
+
+7. Apache Flink 1.9.3 (Port 8081 Dashboard & REST API)
+   Admin User:    ${flinkAdminUser}
+   Admin Password:${flinkAdminPassword}
+   Dashboard URL: http://${vipIp}:8081
+
+8. Kubernetes Cluster Control Plane
+   Admin User:    kubernetes-admin
+   VIP API Server:https://${vipIp}:${vipPort}
+`;
+    copyToClipboard(sheet, 'all-credentials');
+    setProvisioningMessage('📋 [Credentials Vault]: 已成功复制全套服务初始账号密码清单到剪贴板！');
+    setTimeout(() => setProvisioningMessage(null), 5000);
+  };
+
+  // Download credentials YAML
+  const downloadCredentialsYaml = () => {
+    const yamlContent = `# CloudCluster Initial Credentials Configuration
+credentials:
+  minio:
+    endpoint: "http://${vipIp}:9000"
+    console: "http://${vipIp}:9001"
+    rootUser: "${minioUser}"
+    rootPassword: "${minioPassword}"
+  mysql:
+    port: 3306
+    rootUser: "root"
+    rootPassword: "${mysqlRootPassword}"
+    appUser: "${mysqlAppUser}"
+    appPassword: "${mysqlAppPassword}"
+    database: "appdb"
+  mongodb:
+    port: 27017
+    replicaSet: "rs0"
+    adminUser: "${mongoRootUser}"
+    adminPassword: "${mongoRootPassword}"
+    appUser: "${mongoAppUser}"
+    appPassword: "${mongoAppPassword}"
+  redis:
+    port: 6379
+    password: "${redisPassword}"
+  kafka:
+    port: 9092
+    protocol: "SASL_PLAINTEXT"
+    adminUser: "${kafkaAdminUser}"
+    adminPassword: "${kafkaAdminPassword}"
+    clientUser: "${kafkaAppUser}"
+    clientPassword: "${kafkaAppPassword}"
+  zookeeper:
+    port: 2181
+    adminUser: "${zkAdminUser}"
+    adminPassword: "${zkAdminPassword}"
+  flink:
+    port: 8081
+    adminUser: "${flinkAdminUser}"
+    adminPassword: "${flinkAdminPassword}"
+`;
+    const blob = new Blob([yamlContent], { type: 'text/yaml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'initial-cluster-credentials.yaml';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setProvisioningMessage('💾 [Export]: 已成功下载 initial-cluster-credentials.yaml 文件！');
+    setTimeout(() => setProvisioningMessage(null), 4000);
+  };
+
   // Trigger Confirmation Modal Helper
   const triggerConfirmation = (modalConfig: Omit<ConfirmModalData, 'isOpen'>) => {
     setConfirmModal({
@@ -333,16 +718,24 @@ export default function App() {
           body: JSON.stringify({ component, replicas, namespace: 'data-platform' })
         });
         const data = await response.json();
-        setProvisioningMessage(`⚡ [Backend Direct Executed]: ${data.message}`);
-      } catch (err) {
-        setProvisioningMessage(`⚡ [Backend Direct]: Scaled ${component} to ${replicas} pods (Command: helm upgrade cloudcluster ./helm -n data-platform --reuse-values --set ${component}.replicas=${replicas})`);
+        if (response.ok && data.success) {
+          if (data.simulator) {
+            setProvisioningMessage(`🧪 [Simulator Dry-Run]: ${data.message}`);
+          } else {
+            setProvisioningMessage(`⚡ [Host Server Live]: ${data.message}`);
+          }
+        } else {
+          setProvisioningMessage(`❌ [Host Server Error]: ${data.error || data.message || 'Execution error on backend'}`);
+        }
+      } catch (err: any) {
+        setProvisioningMessage(`❌ [Connection Error]: Failed connecting to server: ${err?.message || err}`);
       }
     } else {
       const cmd = `helm upgrade cloudcluster ./helm -n data-platform --reuse-values --set ${component}.replicas=${replicas}`;
       copyToClipboard(cmd, 'scale-cmd');
       setProvisioningMessage(`📋 [Manual CLI Mode]: Generated and copied: ${cmd}`);
     }
-    setTimeout(() => setProvisioningMessage(null), 6000);
+    setTimeout(() => setProvisioningMessage(null), 7000);
   };
 
   // Handle Add Extension Worker Node: Generates CLI for physical/VM execution
@@ -448,7 +841,7 @@ echo "Verify on Master: kubectl get nodes"
             })
           });
           const data = await res.json();
-          if (data.success) {
+          if (res.ok && data.success) {
             setVipIp(cleanNew);
             setVipUpdateResult({
               isOpen: true,
@@ -480,42 +873,16 @@ echo "Verify on Master: kubectl get nodes"
                 `[5/5] Re-established control plane quorum on port ${vipPort}`
               ]
             });
-            setVipUpdateNotice(`✅ 成功切换至终端 ${cleanNew}:${vipPort}！配置文件已全部更新，受影响服务已自动重启。`);
+            setVipUpdateNotice(data.simulator ? `🧪 [Simulator Mode] 模拟完成高可用终端更新！` : `✅ [Host Server Live] 成功切换至终端 ${cleanNew}:${vipPort}！配置文件已全部更新，受影响服务已自动重启。`);
             setTimeout(() => setVipUpdateNotice(null), 8000);
+          } else {
+            setVipUpdateNotice(`❌ [Host Server Error] 终端修改执行失败: ${data.error || data.message}`);
+            setTimeout(() => setVipUpdateNotice(null), 10000);
           }
-        } catch (e) {
+        } catch (e: any) {
           console.error('Failed to update VIP:', e);
-          setVipIp(cleanNew);
-          setVipUpdateResult({
-            isOpen: true,
-            oldEndpoint: vipIp,
-            newEndpoint: cleanNew,
-            port: vipPort,
-            isDomain,
-            updatedFiles: [
-              '/etc/keepalived/keepalived.conf',
-              '/etc/haproxy/haproxy.cfg',
-              '/etc/kubernetes/kubeadm-config.yaml',
-              '/etc/kubernetes/admin.conf',
-              '/etc/kubernetes/kubelet.conf',
-              '/etc/kubernetes/controller-manager.conf',
-              '/etc/kubernetes/scheduler.conf',
-              './helm/values.yaml'
-            ],
-            restartedServices: [
-              'keepalived.service',
-              'haproxy.service',
-              'kube-apiserver (static pod reload via cert SAN update)',
-              'kubelet.service'
-            ],
-            logs: [
-              `[1/5] Verified endpoint format: "${cleanNew}" (${isDomain ? 'Domain / FQDN 域名模式' : 'Virtual IP 地址模式'})`,
-              `[2/5] Patched 8 configuration files: Keepalived, HAProxy, kubeadm-config.yaml, and Kubeconfigs`,
-              `[3/5] Re-signed API server certificates with SAN "${cleanNew}"`,
-              `[4/5] Auto-restarted services: Keepalived, HAProxy, and Kubelet`,
-              `[5/5] Re-established control plane quorum on port ${vipPort}`
-            ]
-          });
+          setVipUpdateNotice(`❌ [Network Error] 请求后端服务器异常: ${e?.message || e}`);
+          setTimeout(() => setVipUpdateNotice(null), 8000);
         } finally {
           setIsUpdatingVip(false);
         }
@@ -584,23 +951,23 @@ echo "Verify on Master: kubectl get nodes"
     });
   };
 
-  // Handle Mongo Sharded Cluster Scale with Modal & Backend Execution
-  const requestScaleMongoShards = (newCount: number) => {
-    const isDownscale = newCount < mongoShardsCount;
+  // Handle MongoDB ReplicaSet Scale with Modal & Backend Execution
+  const requestScaleMongoReplicaSet = (newCount: number) => {
+    const isDownscale = newCount < mongoReplicas;
     triggerConfirmation({
-      title: isDownscale ? 'Confirm Removing MongoDB Shard (分片剔除)' : 'Confirm Adding MongoDB Shard (分片横向扩容)',
+      title: isDownscale ? 'Confirm Downscaling MongoDB ReplicaSet' : 'Confirm Scaling MongoDB ReplicaSet (rs0)',
       actionType: 'scale_mongo',
-      targetName: `MongoDB Sharded Cluster: ${mongoShardsCount} → ${newCount} Shards (${newCount * mongoNodesPerShard} Data Nodes)`,
+      targetName: `MongoDB 8.0 ReplicaSet (rs0): ${mongoReplicas} → ${newCount} Nodes`,
       details: isDownscale 
-        ? `Decommissioning Shard ${mongoShardsCount - 1}. MongoDB balancer will drain and migrate active chunks to remaining shards before node shutdown.`
-        : `Deploying Shard ${newCount - 1} (3 replica members). sh.addShard() will register the new shard into mongos router and trigger chunk rebalancing.`,
-      warningText: isDownscale 
-        ? 'DANGER: Removing a shard requires chunk draining (sh.stopBalancer(), db.adminCommand({ removeShard: ... })) which may take time depending on data volume!'
-        : 'New shard joins the horizontal distribution ring without downtime.',
-      confirmLabel: isDownscale ? 'Drain & Remove Shard' : 'Provision New Shard',
+        ? `Decommissioning 1 secondary replica. Quorum requires at least ${Math.floor(newCount / 2) + 1} votes out of ${newCount} members.`
+        : `Deploying 1 new secondary member to rs0. It will automatically synchronize data via Oplog from Primary across physical nodes.`,
+      warningText: isDownscale && (newCount < 3)
+        ? 'DANGER: A MongoDB replica set should always maintain an odd number of voting members (minimum 3) to prevent split-brain!'
+        : 'Quorum consensus dynamically adjusts to the new replica set size.',
+      confirmLabel: isDownscale ? 'Downscale MongoDB' : 'Scale MongoDB Replica',
       isDestructive: isDownscale,
       onConfirm: () => {
-        setMongoShardsCount(newCount);
+        setMongoReplicas(newCount);
         executePodScale('mongo', newCount);
       }
     });
@@ -629,7 +996,7 @@ echo "Verify on Master: kubectl get nodes"
   // Dynamically generated values.yaml
   const dynamicValuesYaml = useMemo(() => {
     return `# ==============================================================================
-# CloudCluster Stack - Production Values Configuration
+# CloudCluster Stack - Production Values Configuration (Full Auth Enforced)
 # ==============================================================================
 global:
   environment: "production"
@@ -637,8 +1004,8 @@ global:
   imagePullPolicy: "IfNotPresent"
   s3:
     endpoint: "${s3Endpoint}"
-    accessKey: "${s3AccessKey}"
-    secretKey: "${s3SecretKey}"
+    accessKey: "${minioUser}"
+    secretKey: "${minioPassword}"
     region: "us-east-1"
     pathStyle: true
     ssl: false
@@ -646,6 +1013,8 @@ global:
 minio:
   enabled: true
   replicas: ${minioReplicas}
+  rootUser: "${minioUser}"
+  rootPassword: "${minioPassword}"
 
 flink:
   enabled: true
@@ -656,6 +1025,10 @@ flink:
     replicas: 1
   taskManager:
     replicas: ${flinkTaskManagers}
+  auth:
+    enabled: true
+    adminUser: "${flinkAdminUser}"
+    adminPassword: "${flinkAdminPassword}"
 
 kafka:
   enabled: true
@@ -666,23 +1039,36 @@ kafka:
   kraft:
     enabled: ${useKraft}
     combinedRoles: true
+  auth:
+    enabled: true
+    saslMechanism: "PLAIN"
+    adminUser: "${kafkaAdminUser}"
+    adminPassword: "${kafkaAdminPassword}"
+    clientUser: "${kafkaAppUser}"
+    clientPassword: "${kafkaAppPassword}"
 
 mongodb:
   enabled: true
-  mode: "sharded"
+  mode: "replicaset"
+  replicaSetName: "rs0"
+  replicas: ${mongoReplicas}
   image:
     repository: "mongo"
     tag: "8.0.9"
-  mongos:
-    replicas: ${mongoMongosReplicas}
-    port: 27017
-  configsvr:
-    replicas: ${mongoConfigReplicas}
-    port: 27019
-  shards:
-    count: ${mongoShardsCount}
-    replicasPerShard: ${mongoNodesPerShard}
-    port: 27018
+  auth:
+    enabled: true
+    rootUser: "${mongoRootUser}"
+    rootPassword: "${mongoRootPassword}"
+    appUser: "${mongoAppUser}"
+    appPassword: "${mongoAppPassword}"
+  persistence:
+    enabled: true
+    size: "30Gi"
+    storageClass: "local-storage"
+  backupToS3:
+    enabled: true
+    schedule: "0 2 * * *"
+    retentionCount: 3 # 严格仅保留最新 3 份数据 (滚动轮转)
 
 mysql:
   enabled: true
@@ -690,6 +1076,16 @@ mysql:
     repository: "mysql"
     tag: "8.4.6"
   replicas: ${mysqlReplicas}
+  rootPassword: "${mysqlRootPassword}"
+  appUser: "${mysqlAppUser}"
+  appPassword: "${mysqlAppPassword}"
+  replicationUser: "repl_user"
+  replicationPassword: "${mysqlReplPassword}"
+  database: "appdb"
+  backupToS3:
+    enabled: true
+    schedule: "0 3 * * *"
+    retentionCount: 3 # 严格仅保留最新 3 份数据 (滚动轮转)
 
 redis:
   enabled: true
@@ -697,6 +1093,7 @@ redis:
     repository: "redis"
     tag: "6.2.6-alpine"
   replicas: ${redisReplicas}
+  password: "${redisPassword}"
 
 zookeeper:
   enabled: ${enableZookeeper}
@@ -704,8 +1101,18 @@ zookeeper:
     repository: "zookeeper"
     tag: "3.6.3"
   replicas: ${zkReplicas} # 3-member quorum
+  auth:
+    enabled: true
+    adminUser: "${zkAdminUser}"
+    adminPassword: "${zkAdminPassword}"
 `;
-  }, [flinkTaskManagers, kafkaReplicas, zkReplicas, mongoShardsCount, mongoMongosReplicas, mongoConfigReplicas, mongoNodesPerShard, mysqlReplicas, redisReplicas, minioReplicas, useKraft, enableZookeeper, s3Endpoint, s3AccessKey, s3SecretKey]);
+  }, [
+    flinkTaskManagers, kafkaReplicas, zkReplicas, mongoReplicas, mysqlReplicas, redisReplicas, minioReplicas,
+    useKraft, enableZookeeper, s3Endpoint, minioUser, minioPassword, mysqlRootPassword, mysqlAppUser,
+    mysqlAppPassword, mysqlReplPassword, mongoRootUser, mongoRootPassword, mongoAppUser, mongoAppPassword,
+    redisPassword, kafkaAdminUser, kafkaAdminPassword, kafkaAppUser, kafkaAppPassword, zkAdminUser,
+    zkAdminPassword, flinkAdminUser, flinkAdminPassword
+  ]);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
@@ -729,20 +1136,47 @@ zookeeper:
             </div>
           </div>
 
-          {/* Pod Scaling Execution Mode Toggle */}
-          <div className="flex items-center gap-3 text-xs font-mono">
-            <div className="flex items-center gap-2 bg-slate-900 border border-slate-700 p-1 rounded-xl">
-              <span className="text-[11px] text-slate-400 pl-2">Pod Scaler Mode:</span>
+          {/* Execution & Simulator Mode Toggles */}
+          <div className="flex flex-wrap items-center gap-2.5 text-xs font-mono">
+            {/* Backend Simulator Mode Toggle (Requested by user) */}
+            <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 p-1 rounded-xl">
+              <span className="text-[11px] text-slate-400 pl-2">Backend Mode:</span>
+              <button
+                onClick={toggleSimulatorMode}
+                className={`px-2.5 py-1 rounded-lg text-xs font-sans font-semibold transition flex items-center gap-1.5 shadow ${
+                  isSimulatorMode
+                    ? 'bg-amber-600 hover:bg-amber-500 text-white border border-amber-400/40'
+                    : 'bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-400/40'
+                }`}
+                title={isSimulatorMode ? "当前为模拟测试模式 (Dry-Run: 不实际修改系统与容器)" : "当前为宿主机真实执行模式 (Live: 命令直接在后端服务器执行并返回真实结果)"}
+              >
+                {isSimulatorMode ? (
+                  <>
+                    <span className="w-2 h-2 rounded-full bg-amber-200 animate-pulse" />
+                    🧪 Simulator (Dry-run)
+                  </>
+                ) : (
+                  <>
+                    <span className="w-2 h-2 rounded-full bg-emerald-200 animate-pulse" />
+                    ⚡ Real Host (Live)
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Pod Scaling Execution Mode Toggle */}
+            <div className="flex items-center gap-2 bg-slate-900 border border-slate-700/80 p-1 rounded-xl">
+              <span className="text-[11px] text-slate-400 pl-2">Scaler:</span>
               <button
                 onClick={() => setExecutionMode('backend')}
                 className={`px-2.5 py-1 rounded-lg text-xs font-sans font-semibold transition ${
                   executionMode === 'backend'
-                    ? 'bg-emerald-600 text-white shadow'
+                    ? 'bg-indigo-600 text-white shadow'
                     : 'text-slate-400 hover:text-white'
                 }`}
                 title="Directly executes via backend API on Kubernetes"
               >
-                ⚡ Backend Direct (Auto)
+                ⚡ Backend API
               </button>
               <button
                 onClick={() => setExecutionMode('manual')}
@@ -765,6 +1199,7 @@ zookeeper:
         <div className="max-w-7xl mx-auto flex overflow-x-auto gap-2 py-2">
           {[
             { id: 'k8s_nodes', label: '3-Master HA & Worker Nodes', icon: Server, badge: `${k8sNodes.length} Nodes` },
+            { id: 'credentials', label: 'Auth & Initial Credentials (初始认证配置)', icon: Key, badge: 'All Secured' },
             { id: 'extensions', label: 'Cluster & Flink Extension Center', icon: Zap, badge: 'Scalable' },
             { id: 'k9s', label: 'K9s Terminal Monitor', icon: Terminal, badge: 'Live CLI' },
             { id: 'topology', label: 'Cluster Topology & Members', icon: Box },
@@ -1086,10 +1521,1148 @@ zookeeper:
                 </button>
               </div>
             </div>
+
+            {/* External Git & Outbound Network Connectivity Tester Card */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400 shrink-0">
+                    <Globe className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-white flex items-center gap-2">
+                      外部网络与 Git 连通性测试 (External Git Connectivity Hub)
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                        Git 2.34+ 物理机/Pod 出网就绪
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      宿主机与 Kubernetes Pod 原生支持访问外部公网 Git（GitHub / Gitee / GitLab），可直接克隆代码、Helm Charts 与微服务工程。
+                    </p>
+                  </div>
+                </div>
+
+                {/* Quick Presets */}
+                <div className="flex items-center gap-1.5 text-xs font-mono">
+                  <span className="text-[11px] text-slate-400">预设仓库:</span>
+                  {[
+                    { label: 'GitHub', url: 'https://github.com/torvalds/linux.git' },
+                    { label: 'Gitee', url: 'https://gitee.com/oschina/git-osc.git' },
+                    { label: 'GitLab', url: 'https://gitlab.com/gitlab-org/gitlab.git' }
+                  ].map((p) => (
+                    <button
+                      key={p.label}
+                      onClick={() => {
+                        setGitTestUrl(p.url);
+                        testGitConnectivity(p.url);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-slate-950 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 text-[11px] transition"
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* URL Input Bar & Action */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                <div className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 flex items-center gap-2">
+                  <Terminal className="w-4 h-4 text-purple-400 shrink-0" />
+                  <input
+                    type="text"
+                    value={gitTestUrl}
+                    onChange={(e) => setGitTestUrl(e.target.value)}
+                    placeholder="输入外部 Git 仓库地址 (https://github.com/...)"
+                    className="w-full bg-transparent text-white font-mono text-xs focus:outline-none"
+                  />
+                </div>
+                <button
+                  onClick={() => testGitConnectivity()}
+                  disabled={gitTestLoading}
+                  className="px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30 transition shrink-0"
+                >
+                  {gitTestLoading ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>正在探查外部握手...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-3.5 h-3.5" />
+                      <span>测试 Git 连通性</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Live Test Feedback Banner */}
+              {gitTestResult && (
+                <div
+                  className={`p-4 rounded-xl border text-xs font-mono space-y-1.5 transition ${
+                    gitTestResult.accessible
+                      ? 'bg-emerald-950/80 border-emerald-500/40 text-emerald-200'
+                      : 'bg-rose-950/80 border-rose-500/40 text-rose-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between font-bold">
+                    <span className="flex items-center gap-2">
+                      {gitTestResult.accessible ? (
+                        <>
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                          <span>✅ 外部 Git 仓库握手成功！(耗时: {gitTestResult.durationMs}ms)</span>
+                        </>
+                      ) : (
+                        <>
+                          <AlertTriangle className="w-4 h-4 text-rose-400" />
+                          <span>❌ 外部 Git 仓库连接失败</span>
+                        </>
+                      )}
+                    </span>
+                    <span className="text-[10px] text-slate-400">git ls-remote HEAD</span>
+                  </div>
+
+                  {gitTestResult.output && (
+                    <div className="text-[11px] text-slate-300 bg-slate-900/80 p-2 rounded border border-slate-800 truncate">
+                      Remote Ref: {gitTestResult.output}
+                    </div>
+                  )}
+
+                  {gitTestResult.error && (
+                    <div className="text-[11px] text-rose-300 bg-slate-900/80 p-2 rounded border border-rose-900/60">
+                      {gitTestResult.error}
+                    </div>
+                  )}
+
+                  {gitTestResult.suggestion && (
+                    <div className="text-[10px] text-slate-400 font-sans">
+                      💡 提示：{gitTestResult.suggestion}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Tips & Commands Quick Bar */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs font-mono">
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1">
+                  <div className="text-cyan-400 font-bold flex items-center gap-1.5">
+                    <Terminal className="w-3.5 h-3.5" /> 物理机秒级验证命令
+                  </div>
+                  <div className="text-[10px] text-slate-300 bg-slate-900 p-1.5 rounded truncate">
+                    git ls-remote https://github.com/torvalds/linux.git HEAD
+                  </div>
+                </div>
+
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1">
+                  <div className="text-amber-400 font-bold flex items-center gap-1.5">
+                    <Zap className="w-3.5 h-3.5" /> 国内机房 GitHub 加速前缀
+                  </div>
+                  <div className="text-[10px] text-amber-300 bg-slate-900 p-1.5 rounded truncate">
+                    git clone https://ghproxy.net/https://github.com/...
+                  </div>
+                </div>
+
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1">
+                  <div className="text-emerald-400 font-bold flex items-center gap-1.5">
+                    <Key className="w-3.5 h-3.5" /> 私有仓库 Token 克隆语法
+                  </div>
+                  <div className="text-[10px] text-emerald-300 bg-slate-900 p-1.5 rounded truncate">
+                    git clone https://&lt;token&gt;@github.com/org/repo.git
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
-        {/* 2. EXTENSION CENTER TAB (FLINK, KAFKA, MONGO SCALING WITH BACKEND EXECUTION) */}
+        {/* 2. AUTH & INITIAL CREDENTIALS VAULT TAB (ALL COMPONENTS ENFORCED AUTH) */}
+        {activeTab === 'credentials' && (
+          <div className="space-y-6 animate-in fade-in duration-200">
+            {/* Top Overview & Action Header */}
+            <div className="bg-slate-900 border border-indigo-500/40 rounded-2xl p-6 shadow-xl space-y-5">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-indigo-500/20 to-purple-500/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400 shrink-0">
+                    <Key className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                      集群初始安装与全服务统一认证凭证中心 (Credentials Vault)
+                      <span className="px-2 py-0.5 rounded text-xs font-mono bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                        8/8 服务全量强制认证
+                      </span>
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      所有大数据与存储组件均已<strong>强制启用用户名/密码安全鉴权</strong>。在最开始执行集群安装前，您可以在此处统一审查、定制或一键生成高强度账号密码，所有变更与 Helm values.yaml 实时同步。
+                    </p>
+                  </div>
+                </div>
+
+                {/* Toolbar Actions */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={generateAllRandomPasswords}
+                    className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-lg shadow-indigo-600/30 transition"
+                    title="一键为所有 8 大组件生成 16 位高强度随机密码"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    一键生成强密码
+                  </button>
+                  <button
+                    onClick={() => setShowAllPasswords(!showAllPasswords)}
+                    className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition"
+                    title={showAllPasswords ? "点击切换为密码隐藏模式" : "点击切换为密码明文显示模式"}
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                    {showAllPasswords ? '隐藏密码' : '明文显示'}
+                  </button>
+                  <button
+                    onClick={saveCredentialsToServer}
+                    disabled={isSavingCredentials}
+                    className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold text-xs flex items-center gap-1.5 shadow-lg shadow-emerald-600/30 transition"
+                    title="保存并实时同步写入 credentials.env 与 helm/custom-credentials.yaml"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    {isSavingCredentials ? '正在同步...' : '保存并同步到宿主机'}
+                  </button>
+                  <button
+                    onClick={copyAllCredentialsSheet}
+                    className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition"
+                    title="复制完整初始账号密码总表到剪贴板"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    复制凭证总表
+                  </button>
+                  <button
+                    onClick={downloadCredentialsEnv}
+                    className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition"
+                    title="导出为 .env 环境变量文件"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    导出 credentials.env
+                  </button>
+                  <button
+                    onClick={downloadCredentialsYaml}
+                    className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-400 text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition"
+                    title="导出为 YAML 凭证文件"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    导出 credentials.yaml
+                  </button>
+                  <button
+                    onClick={resetDefaultCredentials}
+                    className="px-2.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-rose-300 text-xs font-semibold flex items-center gap-1 border border-slate-800 transition"
+                    title="重置回初始默认凭证"
+                  >
+                    重置默认
+                  </button>
+                </div>
+              </div>
+
+              {/* Initial Install Command Quick Tip */}
+              <div className="bg-slate-950/80 border border-indigo-500/30 rounded-xl p-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs font-mono">
+                <div className="flex items-center gap-2.5 text-slate-300">
+                  <Terminal className="w-4 h-4 text-indigo-400 shrink-0" />
+                  <span>
+                    <strong className="text-white font-sans">物理机/VM 初始安装前初始化命令:</strong> <code className="text-cyan-300 bg-slate-900 px-1.5 py-0.5 rounded border border-slate-700">bash scripts/init-credentials.sh --generate</code>
+                  </span>
+                </div>
+                <div className="text-slate-400 text-[11px] font-sans">
+                  生成文件后执行 <code className="text-amber-300 font-mono">./scripts/helm-install.sh</code> 将自动读取并注入强制认证凭证！
+                </div>
+              </div>
+
+              {/* Security Highlights Banner */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 font-mono text-xs">
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1">
+                  <div className="text-emerald-400 font-bold flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4" /> 100% 拒绝匿名访问
+                  </div>
+                  <p className="text-[11px] text-slate-400 font-sans leading-relaxed">
+                    Kafka 启用 SASL_PLAINTEXT、Mongo 启用 Keyfile 鉴权、Redis 强制 requirepass、MySQL 强制 root/app 双密码。
+                  </p>
+                </div>
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1">
+                  <div className="text-cyan-400 font-bold flex items-center gap-1.5">
+                    <Shield className="w-4 h-4" /> 最小权限原则 (RBAC)
+                  </div>
+                  <p className="text-[11px] text-slate-400 font-sans leading-relaxed">
+                    所有数据服务已内置超级管理员 (Root/Admin) 与应用程序专用读写账户 (App User)，避免应用直连 Root。
+                  </p>
+                </div>
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-1">
+                  <div className="text-amber-400 font-bold flex items-center gap-1.5">
+                    <Sliders className="w-4 h-4" /> 双向实时同步 values.yaml
+                  </div>
+                  <p className="text-[11px] text-slate-400 font-sans leading-relaxed">
+                    本页面修改的任何账号密码，将即时同步更新到 "Helm Values Configurator" 生成器中，直接用于一键部署。
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* 8 Component Credentials Cards Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+              {/* 1. MinIO S3 Object Storage */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3.5 hover:border-slate-700 transition">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400">
+                      <Cloud className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-white text-sm">MinIO S3 对象存储</h3>
+                      <p className="text-[10px] text-slate-400">S3 API (9000) • Web 控制台 (9001)</p>
+                    </div>
+                  </div>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-rose-950 text-rose-300 border border-rose-800">
+                    AccessKey Auth
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">Root User / AccessKey</label>
+                    <input
+                      type="text"
+                      value={minioUser}
+                      onChange={(e) => setMinioUser(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-bold"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">Root Password / SecretKey</label>
+                    <input
+                      type={showAllPasswords ? "text" : "password"}
+                      value={minioPassword}
+                      onChange={(e) => setMinioPassword(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-amber-300 font-bold"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1 text-xs">
+                  <div className="flex justify-between items-center text-[10px] text-slate-400">
+                    <span>Web 控制台登录地址:</span>
+                    <a href={`http://${vipIp}:9001`} target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline flex items-center gap-1">
+                      http://{vipIp}:9001 <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                  <div className="bg-slate-950 p-2 rounded-lg text-[10px] font-mono text-cyan-300 flex items-center justify-between">
+                    <span className="truncate">mc alias set myminio http://{vipIp}:9000 {minioUser} {minioPassword}</span>
+                    <button onClick={() => copyToClipboard(`mc alias set myminio http://${vipIp}:9000 ${minioUser} ${minioPassword}`, 'mc-cmd')} className="text-slate-400 hover:text-white ml-2">
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 2. MySQL 8.4 Database */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3.5 hover:border-slate-700 transition">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-400">
+                      <Database className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-white text-sm">MySQL 8.4 LTS 关系数据库</h3>
+                      <p className="text-[10px] text-slate-400">Port 3306 • GTID 主从复制 • 默认库 appdb</p>
+                    </div>
+                  </div>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-blue-950 text-blue-300 border border-blue-800">
+                    Native Password
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">Root 超级管理员密码</label>
+                    <input
+                      type={showAllPasswords ? "text" : "password"}
+                      value={mysqlRootPassword}
+                      onChange={(e) => setMysqlRootPassword(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-amber-300 font-bold"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">业务应用账号 (App User)</label>
+                    <input
+                      type="text"
+                      value={mysqlAppUser}
+                      onChange={(e) => setMysqlAppUser(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-bold"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">业务应用密码 (App Password)</label>
+                    <input
+                      type={showAllPasswords ? "text" : "password"}
+                      value={mysqlAppPassword}
+                      onChange={(e) => setMysqlAppPassword(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-emerald-300 font-bold"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">复制账号密码 (repl_user)</label>
+                    <input
+                      type={showAllPasswords ? "text" : "password"}
+                      value={mysqlReplPassword}
+                      onChange={(e) => setMysqlReplPassword(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-400"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 text-xs">
+                  <div className="flex justify-between items-center text-[10px] text-slate-400">
+                    <span className="font-semibold text-blue-300">通用微服务应用直连 JDBC 连接串:</span>
+                    <span className="text-[10px] text-emerald-400 font-mono">100% 驱动兼容 (native_password)</span>
+                  </div>
+                  <div className="bg-slate-950 p-2 rounded-lg text-[10px] font-mono text-cyan-300 flex items-center justify-between">
+                    <span className="truncate">jdbc:mysql://{vipIp}:3306/appdb?user={mysqlAppUser}&password={mysqlAppPassword}&useSSL=false&allowPublicKeyRetrieval=true</span>
+                    <button onClick={() => copyToClipboard(`jdbc:mysql://${vipIp}:3306/appdb?user=${mysqlAppUser}&password=${mysqlAppPassword}&useSSL=false&allowPublicKeyRetrieval=true`, 'mysql-jdbc')} className="text-slate-400 hover:text-white ml-2">
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  <div className="flex justify-between items-center text-[10px] text-slate-400 pt-0.5">
+                    <span>Linux 客户端/终端直连命令:</span>
+                    <span className="text-[10px] text-slate-500 font-mono">已授 '%' 全局主权</span>
+                  </div>
+                  <div className="bg-slate-950 p-2 rounded-lg text-[10px] font-mono text-slate-300 flex items-center justify-between">
+                    <span className="truncate">mysql -h {vipIp} -P 3306 -u {mysqlAppUser} -p'{mysqlAppPassword}' appdb</span>
+                    <button onClick={() => copyToClipboard(`mysql -h ${vipIp} -P 3306 -u ${mysqlAppUser} -p'${mysqlAppPassword}' appdb`, 'mysql-cmd')} className="text-slate-400 hover:text-white ml-2">
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 3. MongoDB 8.0 ReplicaSet */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3.5 hover:border-slate-700 transition">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                      <Database className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-white text-sm">MongoDB 8.0 副本集群 (rs0)</h3>
+                      <p className="text-[10px] text-slate-400">Port 27017 • 3 物理机多副本 • 原生直连 + 跨库集中认证</p>
+                    </div>
+                  </div>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-950 text-emerald-300 border border-emerald-800">
+                    Dual-Ready Auth
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">Root 管理员账号 (admin库)</label>
+                    <input
+                      type="text"
+                      value={mongoRootUser}
+                      onChange={(e) => setMongoRootUser(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-bold"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">Root 管理员密码</label>
+                    <input
+                      type={showAllPasswords ? "text" : "password"}
+                      value={mongoRootPassword}
+                      onChange={(e) => setMongoRootPassword(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-amber-300 font-bold"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">应用业务账号 (appdb库)</label>
+                    <input
+                      type="text"
+                      value={mongoAppUser}
+                      onChange={(e) => setMongoAppUser(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-bold"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">业务应用密码</label>
+                    <input
+                      type={showAllPasswords ? "text" : "password"}
+                      value={mongoAppPassword}
+                      onChange={(e) => setMongoAppPassword(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-emerald-300 font-bold"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 text-xs">
+                  {/* Standard Direct App URI without authSource */}
+                  <div className="flex justify-between items-center text-[10px] text-slate-400">
+                    <span className="font-semibold text-emerald-300">① 通用应用原生直连 (Spring Boot / Python / Mongoose 零侵入):</span>
+                    <span className="text-[10px] text-emerald-400 font-mono">无需任何 extra 参数</span>
+                  </div>
+                  <div className="bg-slate-950 p-2 rounded-lg text-[10px] font-mono text-emerald-300 flex items-center justify-between">
+                    <span className="truncate">mongodb://{mongoAppUser}:{mongoAppPassword}@{vipIp}:27017/appdb?replicaSet=rs0</span>
+                    <button onClick={() => copyToClipboard(`mongodb://${mongoAppUser}:${mongoAppPassword}@${vipIp}:27017/appdb?replicaSet=rs0`, 'mongo-uri')} className="text-slate-400 hover:text-white ml-2">
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Multi-Database Universal Access with authSource=admin */}
+                  <div className="flex justify-between items-center text-[10px] text-slate-400 pt-0.5">
+                    <span className="text-slate-400">② 多微服务跨库通用访问 (可访问任意数据库):</span>
+                    <span className="text-[10px] text-cyan-400 font-mono">readWriteAnyDatabase</span>
+                  </div>
+                  <div className="bg-slate-950 p-2 rounded-lg text-[10px] font-mono text-cyan-300 flex items-center justify-between">
+                    <span className="truncate">mongodb://{mongoAppUser}:{mongoAppPassword}@{vipIp}:27017/&lt;任意库&gt;?authSource=admin&replicaSet=rs0</span>
+                    <button onClick={() => copyToClipboard(`mongodb://${mongoAppUser}:${mongoAppPassword}@${vipIp}:27017/appdb?authSource=admin&replicaSet=rs0`, 'mongo-cross')} className="text-slate-400 hover:text-white ml-2">
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 4. Redis 6.2 Sentinel */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3.5 hover:border-slate-700 transition">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400">
+                      <Zap className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-white text-sm">Redis 6.2 哨兵高可用集群</h3>
+                      <p className="text-[10px] text-slate-400">Port 6379 • Sentinel 26379 • 强制 requirepass</p>
+                    </div>
+                  </div>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-rose-950 text-rose-300 border border-rose-800">
+                    requirepass Auth
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">默认账号名称</label>
+                    <input
+                      type="text"
+                      disabled
+                      value="default"
+                      className="w-full bg-slate-950/60 border border-slate-800 rounded-lg p-2 text-slate-400 cursor-not-allowed"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">Auth 认证密码 (Master + Sentinel)</label>
+                    <input
+                      type={showAllPasswords ? "text" : "password"}
+                      value={redisPassword}
+                      onChange={(e) => setRedisPassword(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-amber-300 font-bold"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1 text-xs">
+                  <div className="text-[10px] text-slate-400">CLI 终端登录与 Ping 验证:</div>
+                  <div className="bg-slate-950 p-2 rounded-lg text-[10px] font-mono text-cyan-300 flex items-center justify-between">
+                    <span className="truncate">redis-cli -h {vipIp} -p 6379 -a '{redisPassword}' ping</span>
+                    <button onClick={() => copyToClipboard(`redis-cli -h ${vipIp} -p 6379 -a '${redisPassword}' ping`, 'redis-cmd')} className="text-slate-400 hover:text-white ml-2">
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 5. Apache Kafka KRaft */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3.5 hover:border-slate-700 transition">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-purple-400">
+                      <Cpu className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-white text-sm">Apache Kafka 3.7 (KRaft)</h3>
+                      <p className="text-[10px] text-slate-400">Port 9092 • SASL_PLAINTEXT 强制鉴权 • JAAS 配置</p>
+                    </div>
+                  </div>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-purple-950 text-purple-300 border border-purple-800">
+                    SASL_PLAINTEXT
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">Admin 运维管理员账号</label>
+                    <input
+                      type="text"
+                      value={kafkaAdminUser}
+                      onChange={(e) => setKafkaAdminUser(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-bold"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">Admin 管理员密码</label>
+                    <input
+                      type={showAllPasswords ? "text" : "password"}
+                      value={kafkaAdminPassword}
+                      onChange={(e) => setKafkaAdminPassword(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-amber-300 font-bold"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">Client 生产/消费账号 (app_user)</label>
+                    <input
+                      type="text"
+                      value={kafkaAppUser}
+                      onChange={(e) => setKafkaAppUser(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-bold"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">Client 密码 (app_password)</label>
+                    <input
+                      type={showAllPasswords ? "text" : "password"}
+                      value={kafkaAppPassword}
+                      onChange={(e) => setKafkaAppPassword(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-emerald-300 font-bold"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1 text-xs">
+                  <div className="text-[10px] text-slate-400">客户端 client.properties 配置行:</div>
+                  <div className="bg-slate-950 p-2 rounded-lg text-[10px] font-mono text-cyan-300 flex items-center justify-between">
+                    <span className="truncate">security.protocol=SASL_PLAINTEXT; sasl.jaas.config=...PlainLoginModule username="{kafkaAppUser}" password="{kafkaAppPassword}"</span>
+                    <button onClick={() => copyToClipboard(`security.protocol=SASL_PLAINTEXT\nsasl.mechanism=PLAIN\nsasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="${kafkaAppUser}" password="${kafkaAppPassword}";\nbootstrap.servers=${vipIp}:9092`, 'kafka-props')} className="text-slate-400 hover:text-white ml-2">
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 6. Apache ZooKeeper */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3.5 hover:border-slate-700 transition">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+                      <Server className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-white text-sm">Apache ZooKeeper 3.6.3</h3>
+                      <p className="text-[10px] text-slate-400">Port 2181 • 3-Node Quorum • SASL / Digest 鉴权</p>
+                    </div>
+                  </div>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-cyan-950 text-cyan-300 border border-cyan-800">
+                    SASL Digest
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">ZK Admin 管理账号</label>
+                    <input
+                      type="text"
+                      value={zkAdminUser}
+                      onChange={(e) => setZkAdminUser(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-bold"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">ZK Admin 认证密码</label>
+                    <input
+                      type={showAllPasswords ? "text" : "password"}
+                      value={zkAdminPassword}
+                      onChange={(e) => setZkAdminPassword(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-amber-300 font-bold"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1 text-xs">
+                  <div className="text-[10px] text-slate-400">客户端连接与 Digest Auth 命令:</div>
+                  <div className="bg-slate-950 p-2 rounded-lg text-[10px] font-mono text-cyan-300 flex items-center justify-between">
+                    <span className="truncate">addauth digest {zkAdminUser}:{zkAdminPassword}</span>
+                    <button onClick={() => copyToClipboard(`addauth digest ${zkAdminUser}:${zkAdminPassword}`, 'zk-cmd')} className="text-slate-400 hover:text-white ml-2">
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 7. Apache Flink */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3.5 hover:border-slate-700 transition">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                      <Activity className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-white text-sm">Apache Flink 1.9.3 控制台</h3>
+                      <p className="text-[10px] text-slate-400">Port 8081 • Web Dashboard & REST API BasicAuth</p>
+                    </div>
+                  </div>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-950 text-amber-300 border border-amber-800">
+                    HTTP Basic Auth
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">Dashboard 登录账号</label>
+                    <input
+                      type="text"
+                      value={flinkAdminUser}
+                      onChange={(e) => setFlinkAdminUser(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-bold"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">Dashboard 登录密码</label>
+                    <input
+                      type={showAllPasswords ? "text" : "password"}
+                      value={flinkAdminPassword}
+                      onChange={(e) => setFlinkAdminPassword(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-amber-300 font-bold"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1 text-xs">
+                  <div className="flex justify-between items-center text-[10px] text-slate-400">
+                    <span>Web 仪表盘访问入口:</span>
+                    <a href={`http://${vipIp}:8081`} target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline flex items-center gap-1">
+                      http://{vipIp}:8081 <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                  <div className="bg-slate-950 p-2 rounded-lg text-[10px] font-mono text-cyan-300 flex items-center justify-between">
+                    <span className="truncate">curl -u {flinkAdminUser}:{flinkAdminPassword} http://{vipIp}:8081/jobs/overview</span>
+                    <button onClick={() => copyToClipboard(`curl -u ${flinkAdminUser}:${flinkAdminPassword} http://${vipIp}:8081/jobs/overview`, 'flink-cmd')} className="text-slate-400 hover:text-white ml-2">
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 8. Kubernetes Control Plane */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3.5 hover:border-slate-700 transition">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
+                      <Shield className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-white text-sm">Kubernetes VIP 控制面网关</h3>
+                      <p className="text-[10px] text-slate-400">Keepalived + HAProxy • API Server :6443</p>
+                    </div>
+                  </div>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-950 text-indigo-300 border border-indigo-800">
+                    mTLS + Bearer
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">Master 账号 / Context</label>
+                    <input
+                      type="text"
+                      disabled
+                      value="kubernetes-admin"
+                      className="w-full bg-slate-950/60 border border-slate-800 rounded-lg p-2 text-slate-400 cursor-not-allowed"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400">Worker Join Token</label>
+                    <input
+                      type="text"
+                      disabled
+                      value="abcdef.0123456789abcdef"
+                      className="w-full bg-slate-950/60 border border-slate-800 rounded-lg p-2 text-slate-400 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1 text-xs">
+                  <div className="text-[10px] text-slate-400">集群管理与节点就绪探查 CLI:</div>
+                  <div className="bg-slate-950 p-2 rounded-lg text-[10px] font-mono text-cyan-300 flex items-center justify-between">
+                    <span className="truncate">kubectl --server=https://{vipIp}:{vipPort} get nodes -o wide</span>
+                    <button onClick={() => copyToClipboard(`kubectl --server=https://${vipIp}:${vipPort} get nodes -o wide`, 'k8s-cmd')} className="text-slate-400 hover:text-white ml-2">
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Universal Multi-App Connection Hub & Framework Code Generator */}
+            <div className="bg-slate-900 border border-blue-500/30 rounded-2xl p-6 shadow-xl space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-400 shrink-0">
+                    <Code className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-white flex items-center gap-2">
+                      其他应用程序与微服务通用接入生成器 (Universal Multi-App Hub)
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                        100% 通用无阻碍
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      解答“应用程序登录是否通用”疑问：Spring Boot、Python、Node.js、Go 开箱即连。已支持原生业务库直连与跨库全局访问。
+                    </p>
+                  </div>
+                </div>
+
+                {/* Target Database Input */}
+                <div className="flex items-center gap-2 bg-slate-950 p-1.5 rounded-xl border border-slate-800 text-xs">
+                  <span className="text-slate-400 pl-2">目标微服务业务库名:</span>
+                  <input
+                    type="text"
+                    value={customTargetDb}
+                    onChange={(e) => setCustomTargetDb(e.target.value)}
+                    className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-white font-mono font-bold w-36 focus:outline-none focus:border-blue-500"
+                    placeholder="appdb"
+                  />
+                </div>
+              </div>
+
+              {/* Language / Framework Tabs */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { id: 'spring', label: '☕ Java (Spring Boot)' },
+                    { id: 'zookeeper', label: '🦁 Gateway + ZooKeeper 微服务' },
+                    { id: 'python', label: '🐍 Python (PyMongo & SQLAlchemy)' },
+                    { id: 'nodejs', label: '🟢 Node.js (Mongoose & TypeORM)' },
+                    { id: 'go', label: '🐹 Go (mongo-driver & GORM)' }
+                  ].map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => setSelectedAppLang(item.id as any)}
+                      className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition ${
+                        selectedAppLang === item.id
+                          ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                          : 'bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800'
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+
+                <span className="text-[11px] text-emerald-400 font-mono bg-emerald-950/80 px-2.5 py-1 rounded-lg border border-emerald-800">
+                  {selectedAppLang === 'zookeeper' ? '✅ ZooKeeper 2181 原生注册发现' : '✅ 零侵入: 不需要传 --authenticationDatabase'}
+                </span>
+              </div>
+
+              {/* Framework Specific Code Preview */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* 1. Left Card: MongoDB or Gateway API Entry */}
+                <div className="bg-slate-950 rounded-xl border border-slate-800 p-4 space-y-2">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                    <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+                      {selectedAppLang === 'zookeeper' ? (
+                        <>
+                          <Server className="w-3.5 h-3.5 text-cyan-400" />
+                          <span className="text-cyan-400">1. Spring Cloud Gateway (网关入口与服务路由)</span>
+                        </>
+                      ) : (
+                        <>
+                          <Database className="w-3.5 h-3.5" /> MongoDB 8.0 副本集群配置
+                        </>
+                      )}
+                    </span>
+                    <button
+                      onClick={() => {
+                        const code = selectedAppLang === 'zookeeper'
+                          ? `server:\n  port: 8080\nspring:\n  cloud:\n    zookeeper:\n      connect-string: ${vipIp}:2181 # 集群内使用 zookeeper:2181\n      discovery:\n        enabled: true\n    gateway:\n      discovery:\n        locator:\n          enabled: true\n          lower-case-service-id: true\n      routes:\n        - id: microservice-route\n          uri: lb://auth-service # 自动路由到注册在 ZooKeeper 的子服务\n          predicates:\n            - Path=/api/auth/**`
+                          : selectedAppLang === 'spring'
+                          ? `spring:\n  data:\n    mongodb:\n      uri: mongodb://${mongoAppUser}:${mongoAppPassword}@${vipIp}:27017/${customTargetDb}?replicaSet=rs0`
+                          : selectedAppLang === 'python'
+                          ? `from pymongo import MongoClient\nclient = MongoClient("mongodb://${mongoAppUser}:${mongoAppPassword}@${vipIp}:27017/${customTargetDb}?replicaSet=rs0")\ndb = client["${customTargetDb}"]`
+                          : selectedAppLang === 'nodejs'
+                          ? `const mongoose = require('mongoose');\nawait mongoose.connect('mongodb://${mongoAppUser}:${mongoAppPassword}@${vipIp}:27017/${customTargetDb}?replicaSet=rs0');`
+                          : `client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://${mongoAppUser}:${mongoAppPassword}@${vipIp}:27017/${customTargetDb}?replicaSet=rs0"))`;
+                        copyToClipboard(code, 'mongo-app-code');
+                      }}
+                      className="text-xs text-slate-400 hover:text-white flex items-center gap-1"
+                    >
+                      <Copy className="w-3.5 h-3.5" /> 复制代码
+                    </button>
+                  </div>
+                  <pre className="text-[11px] font-mono text-slate-300 overflow-x-auto p-2 bg-slate-900/60 rounded-lg">
+                    {selectedAppLang === 'zookeeper' && (
+`# gateway/src/main/resources/application.yml
+server:
+  port: 8080
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    zookeeper:
+      connect-string: zookeeper:2181 # 外部访问用 ${vipIp}:2181
+      discovery:
+        enabled: true
+    gateway:
+      discovery:
+        locator:
+          enabled: true
+          lower-case-service-id: true
+      routes:
+        - id: sub-services
+          uri: lb://my-service # 从 ZooKeeper 动态负载均衡
+          predicates:
+            - Path=/api/service/**`
+                    )}
+                    {selectedAppLang === 'spring' && (
+`# application.yml
+spring:
+  data:
+    mongodb:
+      # 驱动自动以 ${customTargetDb} 为认证源，无需额外 authSource 参数！
+      uri: mongodb://${mongoAppUser}:${mongoAppPassword}@${vipIp}:27017/${customTargetDb}?replicaSet=rs0`
+                    )}
+                    {selectedAppLang === 'python' && (
+`# Python PyMongo
+from pymongo import MongoClient
+
+# 原生直连，开箱即用：
+client = MongoClient("mongodb://${mongoAppUser}:${mongoAppPassword}@${vipIp}:27017/${customTargetDb}?replicaSet=rs0")
+db = client["${customTargetDb}"]
+collection = db["users"]`
+                    )}
+                    {selectedAppLang === 'nodejs' && (
+`// Node.js (Mongoose / MongoDB Driver)
+const mongoose = require('mongoose');
+
+// 标准原生连接，不依赖任何 CLI 额外标志：
+await mongoose.connect('mongodb://${mongoAppUser}:${mongoAppPassword}@${vipIp}:27017/${customTargetDb}?replicaSet=rs0', {
+  autoIndex: true
+});`
+                    )}
+                    {selectedAppLang === 'go' && (
+`// Go Official mongo-driver
+package main
+
+import (
+    "go.mongodb.org/mongo-driver/mongo"
+    "go.mongodb.org/mongo-driver/mongo/options"
+)
+
+uri := "mongodb://${mongoAppUser}:${mongoAppPassword}@${vipIp}:27017/${customTargetDb}?replicaSet=rs0"
+client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))`
+                    )}
+                  </pre>
+                  <div className="text-[10px] text-slate-500 leading-relaxed">
+                    {selectedAppLang === 'zookeeper' ? (
+                      <>
+                        💡 <strong>Gateway 说明</strong>：Gateway 充当统一 API 入口（外部通过 VIP <code className="text-cyan-400">{vipIp}:8080</code> 访问），从本集群 3 节点 ZooKeeper 中动态拉取子服务列表，实现零侵入动态转发。
+                      </>
+                    ) : (
+                      <>
+                        💡 <strong>原理说明</strong>：MongoDB 驱动将 URI 路径中的 <code className="text-emerald-400">/{customTargetDb}</code> 作为默认认证数据库。我们在集群初始化中已直接将用户注册在该业务库中，因此无论任何编程语言，均按最通用的 MongoDB 标准 URI 连接即可，<strong>完全不需要传递 <code className="text-slate-400">--authenticationDatabase admin</code></strong>！
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* 2. Right Card: MySQL Application Connection or Microservice ZK Config */}
+                <div className="bg-slate-950 rounded-xl border border-slate-800 p-4 space-y-2">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                    <span className="text-xs font-bold text-blue-400 flex items-center gap-1.5">
+                      {selectedAppLang === 'zookeeper' ? (
+                        <>
+                          <Cpu className="w-3.5 h-3.5 text-indigo-400" />
+                          <span className="text-indigo-400">2. 各子微服务配置 (注册 ZK + 数据库)</span>
+                        </>
+                      ) : (
+                        <>
+                          <Database className="w-3.5 h-3.5" /> MySQL 8.4 LTS 关系数据库配置
+                        </>
+                      )}
+                    </span>
+                    <button
+                      onClick={() => {
+                        const code = selectedAppLang === 'zookeeper'
+                          ? `spring:\n  application:\n    name: auth-service # 与 pom.xml 中 git-commit-id-plugin 一致\n  cloud:\n    zookeeper:\n      connect-string: ${vipIp}:2181\n      discovery:\n        enabled: true\n        prefer-ip-address: true # 使用 K8s Pod IP 注册\n  datasource:\n    url: jdbc:mysql://${vipIp}:3306/${customTargetDb}?useSSL=false&allowPublicKeyRetrieval=true\n    username: ${mysqlAppUser}\n    password: ${mysqlAppPassword}`
+                          : selectedAppLang === 'spring'
+                          ? `spring:\n  datasource:\n    url: jdbc:mysql://${vipIp}:3306/${customTargetDb}?useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC\n    username: ${mysqlAppUser}\n    password: ${mysqlAppPassword}\n    driver-class-name: com.mysql.cj.jdbc.Driver`
+                          : selectedAppLang === 'python'
+                          ? `from sqlalchemy import create_engine\nengine = create_engine("mysql+pymysql://${mysqlAppUser}:${mysqlAppPassword}@${vipIp}:3306/${customTargetDb}")`
+                          : selectedAppLang === 'nodejs'
+                          ? `// TypeORM or Prisma DATABASE_URL\nDATABASE_URL="mysql://${mysqlAppUser}:${mysqlAppPassword}@${vipIp}:3306/${customTargetDb}"`
+                          : `import "gorm.io/driver/mysql"\ndsn := "${mysqlAppUser}:${mysqlAppPassword}@tcp(${vipIp}:3306)/${customTargetDb}?charset=utf8mb4&parseTime=True&loc=Local"\ndb, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})`;
+                        copyToClipboard(code, 'mysql-app-code');
+                      }}
+                      className="text-xs text-slate-400 hover:text-white flex items-center gap-1"
+                    >
+                      <Copy className="w-3.5 h-3.5" /> 复制代码
+                    </button>
+                  </div>
+                  <pre className="text-[11px] font-mono text-slate-300 overflow-x-auto p-2 bg-slate-900/60 rounded-lg">
+                    {selectedAppLang === 'zookeeper' && (
+`# 子微服务 (带有 git-commit-id-plugin) application.yml
+spring:
+  application:
+    name: auth-service
+  cloud:
+    zookeeper:
+      connect-string: zookeeper:2181 # 集群内直连
+      discovery:
+        prefer-ip-address: true      # 关键: 用 Pod IP 跨节点通信
+  datasource:
+    url: jdbc:mysql://mysql:3306/${customTargetDb}?useSSL=false&allowPublicKeyRetrieval=true
+    username: ${mysqlAppUser}
+    password: \${MYSQL_PASSWORD:${mysqlAppPassword}}`
+                    )}
+                    {selectedAppLang === 'spring' && (
+`# application.yml
+spring:
+  datasource:
+    url: jdbc:mysql://${vipIp}:3306/${customTargetDb}?useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: ${mysqlAppUser}
+    password: ${mysqlAppPassword}
+    driver-class-name: com.mysql.cj.jdbc.Driver`
+                    )}
+                    {selectedAppLang === 'python' && (
+`# Python (SQLAlchemy / PyMySQL)
+from sqlalchemy import create_engine
+
+# 通配主机 '%' 与 native_password 保证连接畅通：
+engine = create_engine("mysql+pymysql://${mysqlAppUser}:${mysqlAppPassword}@${vipIp}:3306/${customTargetDb}")`
+                    )}
+                    {selectedAppLang === 'nodejs' && (
+`// .env for Prisma / TypeORM / Sequelize
+DATABASE_URL="mysql://${mysqlAppUser}:${mysqlAppPassword}@${vipIp}:3306/${customTargetDb}?connection_limit=10"
+MYSQL_HOST="${vipIp}"
+MYSQL_PORT="3306"
+MYSQL_USER="${mysqlAppUser}"
+MYSQL_PASSWORD="${mysqlAppPassword}"`
+                    )}
+                    {selectedAppLang === 'go' && (
+`// Go GORM
+import (
+    "gorm.io/driver/mysql"
+    "gorm.io/gorm"
+)
+
+dsn := "${mysqlAppUser}:${mysqlAppPassword}@tcp(${vipIp}:3306)/${customTargetDb}?charset=utf8mb4&parseTime=True&loc=Local"
+db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})`
+                    )}
+                  </pre>
+                  <div className="text-[10px] text-slate-500 leading-relaxed">
+                    {selectedAppLang === 'zookeeper' ? (
+                      <>
+                        💡 <strong>子微服务说明</strong>：子模块设置 <code className="text-indigo-400">prefer-ip-address: true</code> 后，会自动将容器 Pod IP 上报给 ZooKeeper，Gateway 与其他微服务即可通过 ZooKeeper 瞬时发现并进行负载均衡调用。
+                      </>
+                    ) : (
+                      <>
+                        💡 <strong>原理说明</strong>：MySQL 初始化时已执行 <code className="text-blue-300">GRANT ALL ON *.* TO '{mysqlAppUser}'@'%'</code>，主机限定为 <code className="text-blue-300">%</code>。无论您的微服务位于 K8s 内部 Pod 网段（10.244.x.x）还是外部物理机网络，均可畅通访问，并可自由操作或新建任意微服务数据库。
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Fast 1-Click Provisioning for Strictly Isolated Third-party Services */}
+              <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                    <Shield className="w-4 h-4" /> 想要为全新微服务创建【物理隔离】的独立专属账号与数据库？
+                  </span>
+                  <span className="text-[11px] text-slate-400 font-sans">若不想共用 app_user，可复制下方单行命令 1 秒新建：</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs font-mono">
+                  <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800 space-y-1">
+                    <div className="flex justify-between text-[11px] text-slate-400">
+                      <span>MySQL 1-Click 隔离建库与建账号:</span>
+                      <button onClick={() => copyToClipboard(`mysql -h ${vipIp} -P 3306 -u root -p'${mysqlRootPassword}' -e "CREATE DATABASE IF NOT EXISTS ${customTargetDb}; CREATE USER '${customTargetDb}_user'@'%' IDENTIFIED WITH mysql_native_password BY '${mysqlAppPassword}'; GRANT ALL ON ${customTargetDb}.* TO '${customTargetDb}_user'@'%'; FLUSH PRIVILEGES;"`, 'mysql-iso')} className="text-slate-400 hover:text-white">
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div className="text-amber-300 text-[10px] truncate">
+                      mysql -h {vipIp} -u root -p'...' -e "CREATE DATABASE {customTargetDb}; CREATE USER '{customTargetDb}_user'@'%' ...;"
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800 space-y-1">
+                    <div className="flex justify-between text-[11px] text-slate-400">
+                      <span>MongoDB 1-Click 独立原生账号创建:</span>
+                      <button onClick={() => copyToClipboard(`mongosh "mongodb://${vipIp}:27017/admin?replicaSet=rs0" -u ${mongoRootUser} -p'${mongoRootPassword}' --eval "db.getSiblingDB('${customTargetDb}').createUser({user: '${customTargetDb}_user', pwd: '${mongoAppPassword}', roles: [{role: 'readWrite', db: '${customTargetDb}'}]});"`, 'mongo-iso')} className="text-slate-400 hover:text-white">
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div className="text-emerald-300 text-[10px] truncate">
+                      mongosh "mongodb://{vipIp}:27017/admin?replicaSet=rs0" -u admin -p'...' --eval "db.getSiblingDB('{customTargetDb}').createUser(...);"
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* How Microservices Automatically Obtain the Password (4 Standard Patterns) */}
+              <div className="bg-slate-950 p-4 rounded-xl border border-indigo-500/30 space-y-3">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                  <h4 className="text-xs font-bold text-white flex items-center gap-2">
+                    <Key className="w-4 h-4 text-indigo-400" />
+                    所有微服务共用同一套密码时，微服务如何“知道”密码并自动登录？(4 大标准分发姿势)
+                  </h4>
+                  <span className="text-[10px] font-mono text-cyan-300 bg-cyan-950 px-2 py-0.5 rounded border border-cyan-800">
+                    免硬编码最佳实践
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                  {/* Pattern 1 */}
+                  <div className="bg-slate-900 p-3 rounded-xl border border-slate-800 space-y-1.5">
+                    <div className="text-emerald-400 font-bold flex items-center gap-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5" /> 1. K8s Secret 自动注入
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      若微服务在 K8s 内部，Pod 直接引用 <code className="text-emerald-300">mongodb-auth</code> 与 <code className="text-blue-300">mysql-credentials</code> Secret，密码由集群自动注入环境变量，<strong>代码完全无需写死密码</strong>。
+                    </p>
+                  </div>
+
+                  {/* Pattern 2 */}
+                  <div className="bg-slate-900 p-3 rounded-xl border border-slate-800 space-y-1.5">
+                    <div className="text-cyan-400 font-bold flex items-center gap-1.5">
+                      <Layers className="w-3.5 h-3.5" /> 2. 配置中心集中分发
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      在 <strong>Nacos / Apollo / Spring Cloud Config</strong> 的共享组 <code className="text-cyan-300">common.yaml</code> 中写入一次，全量数十个微服务启动时自动继承生效。
+                    </p>
+                  </div>
+
+                  {/* Pattern 3 */}
+                  <div className="bg-slate-900 p-3 rounded-xl border border-slate-800 space-y-1.5">
+                    <div className="text-amber-400 font-bold flex items-center gap-1.5">
+                      <FileText className="w-3.5 h-3.5" /> 3. 环境变量文件挂载
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      独立容器或物理机微服务，直接挂载根目录导出的 <code className="text-amber-300">credentials.env</code>（如 <code className="text-slate-300">--env-file credentials.env</code>），开箱即读。
+                    </p>
+                  </div>
+
+                  {/* Pattern 4 */}
+                  <div className="bg-slate-900 p-3 rounded-xl border border-slate-800 space-y-1.5">
+                    <div className="text-purple-400 font-bold flex items-center gap-1.5">
+                      <Terminal className="w-3.5 h-3.5" /> 4. CI/CD API 自动拉取
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      自动化流水线只需执行 <code className="text-purple-300">curl http://{vipIp}:3000/api/credentials</code>，即可获取 JSON 全量实时密码，无缝注入流水线。
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
         {activeTab === 'extensions' && (
           <div className="space-y-6">
             {/* Flink Cockpit */}
@@ -1382,34 +2955,34 @@ zookeeper:
                   </div>
                 </div>
 
-                {/* MongoDB Sharded Cluster Scaler */}
+                {/* MongoDB 8.0 ReplicaSet Cluster Scaler */}
                 <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30 space-y-3">
                   <div className="flex justify-between items-center">
                     <span className="font-semibold text-sm text-emerald-300 flex items-center gap-2">
-                      <Database className="w-4 h-4" /> Mongo 分片集群 (Sharded)
+                      <Database className="w-4 h-4" /> Mongo 副本集群 (rs0)
                     </span>
                     <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 font-mono text-xs border border-emerald-800">
-                      {mongoShardsCount} 分片 ({mongoShardsCount * mongoNodesPerShard} 节点)
+                      {mongoReplicas} Nodes
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => requestScaleMongoShards(Math.max(1, mongoShardsCount - 1))}
+                      onClick={() => requestScaleMongoReplicaSet(Math.max(3, mongoReplicas - 1))}
                       className="flex-1 py-1.5 rounded bg-slate-900 hover:bg-rose-900/60 text-slate-200 text-xs border border-slate-800"
-                      title="Drain & remove 1 Shard"
+                      title="Decommission 1 secondary replica"
                     >
-                      -1 Shard
+                      -1 Replica
                     </button>
                     <button
-                      onClick={() => requestScaleMongoShards(mongoShardsCount + 1)}
+                      onClick={() => requestScaleMongoReplicaSet(mongoReplicas + 1)}
                       className="flex-1 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold"
-                      title="Deploy & register 1 new Shard (3 replicas)"
+                      title="Deploy & join 1 new secondary replica"
                     >
-                      +1 Shard
+                      +1 Replica
                     </button>
                   </div>
                   <div className="text-[11px] text-slate-400">
-                    架构: <span className="text-slate-200">2 Mongos (27017) • 3 CSRS • {mongoShardsCount} Shards</span>
+                    架构: <span className="text-slate-200">1 Primary + {mongoReplicas - 1} Secondaries • Quorum: {Math.floor(mongoReplicas / 2) + 1}/{mongoReplicas}</span>
                   </div>
                 </div>
 
@@ -1487,11 +3060,11 @@ zookeeper:
               </div>
               <div className="p-4 bg-slate-950 font-mono text-xs text-slate-300 space-y-1.5 max-h-[400px] overflow-auto">
                 <div className="text-yellow-400">--- Kubernetes Cluster Node Pod Allocation ---</div>
-                <div className="text-emerald-400">k8s-master-01 (192.168.1.101): [control-plane, worker] → minio-0, kafka-0, zookeeper-0, mongodb-mongos-0, mongodb-configsvr-0, mongodb-shard0-0, mysql-0, flink-jobmanager</div>
-                <div className="text-cyan-300">k8s-master-02 (192.168.1.102): [control-plane, worker] → minio-1, kafka-1, zookeeper-1, mongodb-mongos-1, mongodb-configsvr-1, mongodb-shard0-1, mysql-1, flink-taskmanager-0</div>
-                <div className="text-purple-300">k8s-master-03 (192.168.1.103): [control-plane, worker] → minio-2, kafka-2, zookeeper-2, mongodb-configsvr-2, mongodb-shard1-0, mongodb-shard1-1, mysql-2, flink-taskmanager-1</div>
+                <div className="text-emerald-400">k8s-master-01 (192.168.1.101): [control-plane, worker] → minio-0, kafka-0, zookeeper-0, mongodb-0 (Primary, rs0), mysql-0 (Primary), flink-jobmanager</div>
+                <div className="text-cyan-300">k8s-master-02 (192.168.1.102): [control-plane, worker] → minio-1, kafka-1, zookeeper-1, mongodb-1 (Secondary, rs0), mysql-1 (Replica), flink-taskmanager-0</div>
+                <div className="text-purple-300">k8s-master-03 (192.168.1.103): [control-plane, worker] → minio-2, kafka-2, zookeeper-2, mongodb-2 (Secondary, rs0), mysql-2 (Replica), flink-taskmanager-1</div>
                 {k8sNodes.length > 3 && (
-                  <div className="text-amber-300">Extension Workers: {k8sNodes.slice(3).map(n => `${n.hostname} (${n.ip})`).join(', ')} → Additional Flink TMs & Shard Replicas</div>
+                  <div className="text-amber-300">Extension Workers: {k8sNodes.slice(3).map(n => `${n.hostname} (${n.ip})`).join(', ')} → Additional Flink TMs & Worker Workloads</div>
                 )}
               </div>
             </div>
@@ -1532,9 +3105,9 @@ zookeeper:
                 </div>
 
                 <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/30">
-                  <div className="text-emerald-400 font-bold text-sm">MongoDB 8.0.9 (分片集群)</div>
-                  <div className="text-slate-300 mt-1">{mongoShardsCount} Shards ({mongoShardsCount * mongoNodesPerShard} Data Nodes)</div>
-                  <div className="text-slate-500 text-[10px] mt-1">2 Mongos (27017) • 3 CSRS • 自动块均衡</div>
+                  <div className="text-emerald-400 font-bold text-sm">MongoDB 8.0.9 (副本集群)</div>
+                  <div className="text-slate-300 mt-1">{mongoReplicas} Nodes ReplicaSet (rs0)</div>
+                  <div className="text-slate-500 text-[10px] mt-1">1 Primary + {mongoReplicas - 1} Secondaries • S3 冷备份</div>
                 </div>
 
                 <div className="bg-slate-950 p-4 rounded-xl border border-blue-500/30">
@@ -1556,14 +3129,372 @@ zookeeper:
         {/* 5. STORAGE & PERSISTENCE */}
         {activeTab === 'storage' && (
           <div className="space-y-6">
-            <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6">
-              <h2 className="text-lg font-bold text-white flex items-center gap-2 mb-2">
-                <HardDrive className="w-5 h-5 text-emerald-400" />
-                Storage & Volume Claim Templates (PVC)
-              </h2>
-              <p className="text-xs text-slate-300">
-                Data is mounted on dedicated Persistent Volumes and backed up to MinIO S3. Container restarts do not touch or corrupt persistent database files.
-              </p>
+            {/* Header / Q&A Core Verdict */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shrink-0">
+                    <HardDrive className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h2 className="text-base font-bold text-white flex items-center gap-2">
+                      3 台物理主机下 MySQL & MongoDB 持久化存储架构指南
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">
+                        Storage Best Practices
+                      </span>
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      针对“3台物理机数据放在哪台都不合适、能否直接挂载 S3 对象存储”的深度解答与落地方案
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 font-mono text-xs">
+                  <span className="text-slate-400">当前集群拓扑:</span>
+                  <span className="px-2.5 py-1 rounded bg-slate-950 border border-slate-700 text-emerald-400 font-bold">
+                    3 Master/Worker 物理机
+                  </span>
+                </div>
+              </div>
+
+              {/* Direct Verdict Alert */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-rose-950/30 border border-rose-500/40 rounded-xl p-4 space-y-2">
+                  <div className="flex items-center gap-2 text-rose-300 font-bold text-xs">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                    ❌ 核心结论：直接挂载 S3 放 MySQL/Mongo 原生数据盘——不可行！
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    S3 是<strong>对象存储 (Object Storage)</strong>，仅支持全量 Put/Get，不提供 POSIX 文件系统的原子字节锁 (byte-range lock)、原子扇区写入与 <code className="text-rose-300">fsync()</code> 刷盘保证。若通过 s3fs 挂载直接运行数据库：
+                  </p>
+                  <ul className="text-[11px] text-slate-400 space-y-1 list-disc list-inside">
+                    <li>每次 16KB 页更新需全量重新上传，写入延迟从本地 &lt;0.5ms 暴增至 300~1000ms+；</li>
+                    <li>S3 缺乏分布式文件租约控制，节点漂移或并发极易造成<strong>数据库死锁与表空间损坏</strong>。</li>
+                  </ul>
+                </div>
+
+                <div className="bg-emerald-950/30 border border-emerald-500/40 rounded-xl p-4 space-y-2">
+                  <div className="flex items-center gap-2 text-emerald-300 font-bold text-xs">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    ✅ S3 的真正杀手级定位：实时快照、Binlog 归档与异地灾备 (PITR)
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    S3 是数据库<strong>冷热数据分离的完美载体</strong>！生产最佳架构是：<strong>数据库日常读写依托物理机本地高速盘，旁路服务实时/定时将全量快照与增量日志推送到 S3/MinIO</strong>：
+                  </p>
+                  <ul className="text-[11px] text-slate-400 space-y-1 list-disc list-inside">
+                    <li>MySQL XtraBackup / Binlog 实时流式推送到 S3，支持任意秒级时间点恢复 (PITR)；</li>
+                    <li>MongoDB Oplog 持续归档至 MinIO 桶，即使 3 台机器全部损坏也可从 S3 瞬时重建。</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            {/* 3 Production Architectural Solutions Selector */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-indigo-400" />
+                    3 台物理机环境下落地数据库持久化的 3 大权威方案
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">点击切换查看各方案的架构设计、容灾能力与配置文件模板</p>
+                </div>
+                <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs font-mono">
+                  <button
+                    onClick={() => setStorageSolutionTab('s3_hybrid')}
+                    className={`px-3 py-1.5 rounded-lg font-medium transition flex items-center gap-1.5 ${
+                      storageSolutionTab === 's3_hybrid'
+                        ? 'bg-emerald-600 text-white shadow'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <span className="w-2 h-2 rounded-full bg-emerald-300 animate-pulse" />
+                    方案 3: 本地盘 + MySQL/Mongo S3冷备份 (当前生效)
+                  </button>
+                  <button
+                    onClick={() => setStorageSolutionTab('replica')}
+                    className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                      storageSolutionTab === 'replica'
+                        ? 'bg-indigo-600 text-white shadow'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    方案 1: 仅本地原生副本
+                  </button>
+                  <button
+                    onClick={() => setStorageSolutionTab('distributed')}
+                    className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                      storageSolutionTab === 'distributed'
+                        ? 'bg-indigo-600 text-white shadow'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    方案 2: 分布式块存储 (Longhorn)
+                  </button>
+                </div>
+              </div>
+
+              {/* Solution A: Native ReplicaSet (Recommended) */}
+              {storageSolutionTab === 'replica' && (
+                <div className="space-y-4 animate-in fade-in duration-200">
+                  <div className="bg-slate-950 p-4 rounded-xl border border-indigo-500/30 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-white text-xs flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[10px]">
+                          工程默认首选
+                        </span>
+                        方案 A：应用层原生多副本高可用 + 本地高速盘 (Local PV / HostPath)
+                      </span>
+                      <span className="text-[11px] font-mono text-emerald-400">IOPS: 100,000+ | 延时: &lt;0.2ms</span>
+                    </div>
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      <strong>核心原理</strong>：不依赖任何第三方网络共享存储，让 MySQL 与 MongoDB 自身的高可用机制来跨物理机同步数据。每台物理机挂载本地高性能 NVMe/SSD 盘。
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 font-mono text-xs">
+                      <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-800 space-y-1">
+                        <div className="text-amber-300 font-bold">Master 1 (192.168.1.101)</div>
+                        <div className="text-slate-300">• MySQL Primary (主写)</div>
+                        <div className="text-slate-300">• MongoDB Primary (主写)</div>
+                        <div className="text-[10px] text-slate-500">存储路径: /opt/kubernetes/data/node1</div>
+                      </div>
+                      <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-800 space-y-1">
+                        <div className="text-blue-300 font-bold">Master 2 (192.168.1.102)</div>
+                        <div className="text-slate-300">• MySQL Replica 1 (半同步从)</div>
+                        <div className="text-slate-300">• MongoDB Secondary 1</div>
+                        <div className="text-[10px] text-slate-500">存储路径: /opt/kubernetes/data/node2</div>
+                      </div>
+                      <div className="bg-slate-900/80 p-3 rounded-lg border border-slate-800 space-y-1">
+                        <div className="text-purple-300 font-bold">Master 3 (192.168.1.103)</div>
+                        <div className="text-slate-300">• MySQL Replica 2 (候选备库)</div>
+                        <div className="text-slate-300">• MongoDB Secondary 2</div>
+                        <div className="text-[10px] text-slate-500">存储路径: /opt/kubernetes/data/node3</div>
+                      </div>
+                    </div>
+                    <div className="bg-slate-900 p-3 rounded-lg text-xs text-slate-300 space-y-1">
+                      <strong className="text-emerald-400">为什么最适合 3 台物理机？</strong>
+                      <p className="text-[11px] text-slate-400 leading-relaxed">
+                        当任意一台物理机断电宕机，MySQL MGR / 半同步从库与 MongoDB Raft 协议在 3~5 秒内自动选出新主库接管，数据绝不丢失，且无任何网络文件锁性能损耗。
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* K8s Local PV YAML Snippet */}
+                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2">
+                    <span className="text-xs font-mono text-slate-400 font-bold">K8s Local StorageClass & PVC 定义:</span>
+                    <pre className="bg-slate-900 p-3 rounded-lg text-[11px] font-mono text-cyan-300 overflow-x-auto">
+{`apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-mysql-node1
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /opt/kubernetes/data/mysql
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - k8s-master-01`}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {/* Solution B: Distributed Block Storage (Longhorn) */}
+              {storageSolutionTab === 'distributed' && (
+                <div className="space-y-4 animate-in fade-in duration-200">
+                  <div className="bg-slate-950 p-4 rounded-xl border border-cyan-500/30 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-white text-xs flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[10px]">
+                          云原生分布式存储
+                        </span>
+                        方案 B：K8s 分布式共享块存储 (Rook-Ceph / Longhorn)
+                      </span>
+                      <span className="text-[11px] font-mono text-cyan-400">副本数: 3 副本跨主机镜像</span>
+                    </div>
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      <strong>核心原理</strong>：在 3 台物理主机上部署轻量级开源分布式块存储（如 <strong>Longhorn</strong>）。Longhorn 自动聚合 3 台主机的空闲磁盘空间为一个统一的存储池，并在 3 台主机之间建立数据同步镜像（Replication = 3）。
+                    </p>
+                    <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800 text-xs space-y-2">
+                      <div className="text-cyan-300 font-bold">优势与工作流程：</div>
+                      <ul className="text-[11px] text-slate-300 space-y-1 list-disc list-inside">
+                        <li><strong>彻底解耦计算与存储</strong>：MySQL 或 Mongo 只需要声明一个标准的 <code className="text-slate-200">ReadWriteOnce</code> PVC；</li>
+                        <li><strong>跨机自由飘移</strong>：如果物理机 1 故障，K8s 会将 MySQL Pod 自动调度到物理机 2，Longhorn 底层网络块设备自动在物理机 2 挂载，数据完全保留；</li>
+                        <li><strong>支持定时快照推送到 S3</strong>：Longhorn 内置原生支持直接将卷快照自动备份至 MinIO / S3 对象存储。</li>
+                      </ul>
+                    </div>
+                  </div>
+
+                  {/* Longhorn PVC Example */}
+                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2">
+                    <span className="text-xs font-mono text-slate-400 font-bold">Longhorn PVC 资源声明:</span>
+                    <pre className="bg-slate-900 p-3 rounded-lg text-[11px] font-mono text-cyan-300 overflow-x-auto">
+{`apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-longhorn-pvc
+  namespace: data-platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 100Gi`}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {/* Solution C: Local Fast Disk + S3 Streaming Backup (Selected Standard) */}
+              {storageSolutionTab === 's3_hybrid' && (
+                <div className="space-y-4 animate-in fade-in duration-200">
+                  <div className="bg-slate-950 p-4 rounded-xl border border-emerald-500/40 space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <span className="font-bold text-white text-xs flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px]">
+                          当前默认已生效方案
+                        </span>
+                        方案 3：本地高性能磁盘 + MinIO S3 冷备份与日志归档灾备 (MySQL & MongoDB)
+                      </span>
+                      <span className="text-[11px] font-mono text-emerald-300">MySQL & Mongo 均采用 S3 冷备份 • Mongo 3节点副本集群</span>
+                    </div>
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      <strong>架构精髓</strong>：解决“数据放哪台物理机都不合适”与“S3不能直接跑数据库原生数据盘”的矛盾：<br/>
+                      1. <strong>日常读写</strong>：利用每台物理机的本地 NVMe/SSD 高性能持久卷，保持 &lt;0.2ms 超低延迟与百万级 IOPS；<br/>
+                      2. <strong>高可用机制</strong>：MongoDB 采用 <strong>3 节点原生副本集群 (rs0)</strong>，MySQL 采用 GTID 主从半同步，跨 3 台物理主机保证主机宕机 3~5 秒无感切换；<br/>
+                      3. <strong>跨机安全兜底</strong>：通过 K8s 定时 CronJob 自动将 MySQL 与 MongoDB 的<strong>全量快照与增量 Oplog/Binlog 流式上传至中央 MinIO S3 桶</strong>，即使 3 台机器全部硬件损毁也可秒级异地拉取恢复。
+                    </p>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 font-mono text-xs pt-1">
+                      <div className="bg-slate-900/90 p-3.5 rounded-xl border border-blue-500/30 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-blue-400 font-bold flex items-center gap-1.5">
+                            <Database className="w-3.5 h-3.5" /> MySQL 8.4 S3 冷备体系
+                          </span>
+                          <span className="text-[10px] text-slate-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                            每日 03:00 UTC
+                          </span>
+                        </div>
+                        <ul className="text-[11px] text-slate-300 font-sans space-y-1 list-disc list-inside">
+                          <li><strong>备份策略</strong>：基于 <code className="text-cyan-300">mysqldump --single-transaction --quick</code> 压缩后流式推送到 MinIO；</li>
+                          <li><strong>存储路径</strong>：<code className="text-blue-300">s3://mysql-backups/mysql_YYYYMMDD_HHMMSS.sql.gz</code>；</li>
+                          <li><strong>保留周期 (3 份轮转)</strong>：<span className="text-amber-300 font-bold">严格仅保留最新 3 份冷备数据</span>，超额自动安全剪裁，杜绝打满存储；</li>
+                          <li><strong>一键还原命令</strong>：
+                            <pre className="bg-slate-950 p-1.5 mt-1 rounded text-[10px] text-cyan-300 font-mono overflow-x-auto">aws --endpoint-url={s3Endpoint} s3 cp s3://mysql-backups/latest.sql.gz - | gunzip | mysql -h mysql-0 -uroot -p</pre>
+                          </li>
+                        </ul>
+                      </div>
+
+                      <div className="bg-slate-900/90 p-3.5 rounded-xl border border-emerald-500/30 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-emerald-400 font-bold flex items-center gap-1.5">
+                            <Database className="w-3.5 h-3.5" /> MongoDB 8.0 副本集群 + S3 冷备
+                          </span>
+                          <span className="text-[10px] text-slate-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                            每日 02:00 UTC
+                          </span>
+                        </div>
+                        <ul className="text-[11px] text-slate-300 font-sans space-y-1 list-disc list-inside">
+                          <li><strong>集群模式</strong>：<strong>3 节点副本集群 (ReplicaSet rs0)</strong>，1 Primary + 2 Secondaries 跨物理机；</li>
+                          <li><strong>备份策略</strong>：基于 <code className="text-cyan-300">mongodump --oplog --archive</code> 零停机热备；</li>
+                          <li><strong>存储路径</strong>：<code className="text-emerald-300">s3://mongodb-backups/mongo_YYYYMMDD_HHMMSS.archive.gz</code>；</li>
+                          <li><strong>保留周期 (3 份轮转)</strong>：<span className="text-amber-300 font-bold">严格仅保留最新 3 份冷备数据</span>，备份后自动清理旧版本；</li>
+                          <li><strong>一键还原命令</strong>：
+                            <pre className="bg-slate-950 p-1.5 mt-1 rounded text-[10px] text-cyan-300 font-mono overflow-x-auto">aws --endpoint-url={s3Endpoint} s3 cp s3://mongodb-backups/latest.archive.gz - | mongorestore --oplogReplay --archive</pre>
+                          </li>
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* K8s S3 Backup CronJob Snippet */}
+                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2">
+                    <span className="text-xs font-mono text-slate-400 font-bold flex items-center gap-2">
+                      <Terminal className="w-3.5 h-3.5 text-cyan-400" />
+                      当前运行中的 MySQL & MongoDB S3 冷备份 CronJob (严格保留最新 3 份数据):
+                    </span>
+                    <pre className="bg-slate-900 p-3 rounded-lg text-[11px] font-mono text-cyan-300 overflow-x-auto">
+{`# 1. MongoDB 副本集群 (rs0) S3 冷备份 (保留最新 3 份)
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mongodb-backup-to-s3
+  namespace: data-platform
+spec:
+  schedule: "0 2 * * *" # 每天 02:00 UTC 执行冷备份并推送至 S3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: mongo-backup
+            image: mongo:8.0.9
+            command:
+            - /bin/bash
+            - -c
+            - |
+              TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+              # 1. 抽取一致性快照并上传 S3
+              mongodump --host="mongodb-0.mongodb-headless:27017" \\
+                --username="admin" --password="$MONGO_PASSWORD" --authenticationDatabase="admin" \\
+                --oplog --archive | aws --endpoint-url=${s3Endpoint} s3 cp - s3://mongodb-backups/mongo_\${TIMESTAMP}.archive.gz
+              # 2. 轮转裁剪：严格只保留最新 3 份备份，自动清理旧文件
+              OLD_BACKUPS=$(aws --endpoint-url=${s3Endpoint} s3 ls s3://mongodb-backups/ | grep "mongo_" | sort | head -n -3 | awk '{print $4}')
+              for FILE in $OLD_BACKUPS; do
+                aws --endpoint-url=${s3Endpoint} s3 rm "s3://mongodb-backups/$FILE"
+              done
+---
+# 2. MySQL 8.4 S3 冷备份 (保留最新 3 份)
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mysql-backup-to-s3
+  namespace: data-platform
+spec:
+  schedule: "0 3 * * *" # 每天 03:00 UTC 执行冷备份并推送至 S3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: mysql-backup
+            image: mysql:8.4.6
+            command:
+            - /bin/bash
+            - -c
+            - |
+              TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+              # 1. 抽取一致性快照并上传 S3
+              mysqldump -h mysql-0.mysql-headless -u root -p"$MYSQL_ROOT_PASSWORD" \\
+                --all-databases --single-transaction --quick --routines --triggers \\
+                | gzip | aws --endpoint-url=${s3Endpoint} s3 cp - s3://mysql-backups/mysql_\${TIMESTAMP}.sql.gz
+              # 2. 轮转裁剪：严格只保留最新 3 份备份，自动清理旧文件
+              OLD_BACKUPS=$(aws --endpoint-url=${s3Endpoint} s3 ls s3://mysql-backups/ | grep "mysql_" | sort | head -n -3 | awk '{print $4}')
+              for FILE in $OLD_BACKUPS; do
+                aws --endpoint-url=${s3Endpoint} s3 rm "s3://mysql-backups/$FILE"
+              done`}
+                    </pre>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}

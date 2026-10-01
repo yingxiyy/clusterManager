@@ -1,5 +1,17 @@
 {{- if .Values.zookeeper.enabled }}
 apiVersion: v1
+kind: Secret
+metadata:
+  name: zookeeper-credentials
+  labels:
+    app: zookeeper
+    {{- include "cloudcluster.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  admin-user: {{ .Values.zookeeper.auth.adminUser | default "zkAdmin" | quote }}
+  admin-password: {{ .Values.zookeeper.auth.adminPassword | default "zkAdminPassword123" | quote }}
+---
+apiVersion: v1
 kind: Service
 metadata:
   name: zookeeper

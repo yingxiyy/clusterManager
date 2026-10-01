@@ -9,6 +9,8 @@ metadata:
 type: Opaque
 stringData:
   root-password: {{ .Values.mysql.rootPassword | quote }}
+  app-user: {{ .Values.mysql.appUser | default "app_user" | quote }}
+  app-password: {{ .Values.mysql.appPassword | default "mysqlAppPassword123" | quote }}
   replication-user: {{ .Values.mysql.replicationUser | quote }}
   replication-password: {{ .Values.mysql.replicationPassword | quote }}
 ---
@@ -116,6 +118,16 @@ spec:
                   key: root-password
             - name: MYSQL_DATABASE
               value: {{ .Values.mysql.database | quote }}
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-credentials
+                  key: app-user
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-credentials
+                  key: app-password
           ports:
             - name: mysql
               containerPort: 3306
@@ -183,6 +195,16 @@ spec:
                 secretKeyRef:
                   name: mysql-credentials
                   key: replication-password
+            - name: APP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-credentials
+                  key: app-user
+            - name: APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-credentials
+                  key: app-password
           command:
             - /bin/bash
             - -c
@@ -192,10 +214,15 @@ spec:
                 sleep 3
               done
 
-              echo "Configuring replication user on mysql-0..."
+              echo "Configuring replication & multi-app universal application user on mysql-0..."
               mysql -h mysql-0.mysql-headless -u root -p"${MYSQL_ROOT_PASSWORD}" <<EOF
               CREATE USER IF NOT EXISTS '${REPL_USER}'@'%' IDENTIFIED WITH mysql_native_password BY '${REPL_PASSWORD}';
               GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO '${REPL_USER}'@'%';
+
+              -- Universal application user: accessible from any host (%) with full DDL/DML across databases
+              CREATE USER IF NOT EXISTS '${APP_USER}'@'%' IDENTIFIED WITH mysql_native_password BY '${APP_PASSWORD}';
+              ALTER USER '${APP_USER}'@'%' IDENTIFIED WITH mysql_native_password BY '${APP_PASSWORD}';
+              GRANT ALL PRIVILEGES ON *.* TO '${APP_USER}'@'%' WITH GRANT OPTION;
               FLUSH PRIVILEGES;
               EOF
 

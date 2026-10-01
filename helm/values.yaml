@@ -98,9 +98,13 @@ flink:
     checkpointDir: "s3://flink-checkpoints/checkpoints"
     savepointDir: "s3://flink-checkpoints/savepoints"
     checkpointIntervalMs: 60000
+  auth:
+    enabled: true
+    adminUser: "flinkAdmin"
+    adminPassword: "flinkAdminPassword123"
 
 # ------------------------------------------------------------------------------
-# 3. APACHE KAFKA (KRaft mode, 3-member cluster, Java 1.8)
+# 3. APACHE KAFKA (KRaft mode, 3-member cluster, Java 1.8 + SASL Authentication)
 # ------------------------------------------------------------------------------
 kafka:
   enabled: true
@@ -112,6 +116,13 @@ kafka:
   kraft:
     enabled: true # Upgraded to KRaft mode (no ZooKeeper required)
     combinedRoles: true # Each node is broker + controller
+  auth:
+    enabled: true
+    saslMechanism: "PLAIN"
+    adminUser: "admin"
+    adminPassword: "kafkaAdminPassword123"
+    clientUser: "app_user"
+    clientPassword: "kafkaAppPassword123"
   ports:
     client: 9092
     controller: 9093
@@ -133,39 +144,28 @@ kafka:
       memory: "4Gi"
 
 # ------------------------------------------------------------------------------
-# 4. MONGODB 8.0.9 (Ubuntu 22.04 base, Distributed Sharded Cluster 分片集群)
+# 4. MONGODB 8.0.9 (Ubuntu 22.04 base, 3-Member HA ReplicaSet 副本集群)
 # ------------------------------------------------------------------------------
 mongodb:
   enabled: true
-  mode: "sharded" # "sharded" (分片模式)
+  mode: "replicaset" # "replicaset" (3-member HA 副本集群模式: rs0)
   image:
     repository: "mongo" # Official Docker Hub image (Ubuntu 22.04 base)
     tag: "8.0.9"
+  replicaSetName: "rs0"
+  replicas: 3 # 3 members across 3 physical hosts (1 Primary + 2 Secondaries)
+  port: 27017
   auth:
     enabled: true
     rootUser: "admin"
     rootPassword: "mongoAdminPassword123"
+    appUser: "mongo_app"
+    appPassword: "mongoAppPassword123"
     keyfileSecret: "mongodb-keyfile-secret"
-  # Mongos Query Routers (Stateless, Load Balanced Entrypoint)
-  mongos:
-    replicas: 2
-    port: 27017
-  # Config Server ReplicaSet (CSRS, Metadata & Chunk Routing)
-  configsvr:
-    replicas: 3
-    port: 27019
-    replicaSetName: "configReplSet"
-    persistence:
-      enabled: true
-      size: "10Gi"
-  # Shard Clusters (Data Storage with Horizontal Sharding)
-  shards:
-    count: 2 # 2 Shards default (Shard 0 & Shard 1, extensible to N)
-    replicasPerShard: 3 # 3 members per shard replica set (1 Primary + 2 Secondaries)
-    port: 27018
-    persistence:
-      enabled: true
-      size: "30Gi"
+  persistence:
+    enabled: true
+    size: "30Gi"
+    storageClass: "local-storage" # Local NVMe/SSD disk per physical machine
   resources:
     requests:
       cpu: "500m"
@@ -175,8 +175,8 @@ mongodb:
       memory: "4Gi"
   backupToS3:
     enabled: true
-    schedule: "0 2 * * *" # Daily at 02:00 UTC
-    retentionDays: 14
+    schedule: "0 2 * * *" # Daily at 02:00 UTC (S3 冷备份与 Oplog 归档)
+    retentionCount: 3 # 严格仅保留最新 3 份数据 (滚动轮转自动清理旧版本)
 
 # ------------------------------------------------------------------------------
 # 5. MYSQL 8.4.6 (3-member Cluster + S3 Automated Backup)
@@ -189,6 +189,8 @@ mysql:
   replicas: 3 # 3 members (Primary mysql-0, Secondary replicas mysql-1, mysql-2)
   port: 3306
   rootPassword: "mysqlRootPassword123"
+  appUser: "app_user"
+  appPassword: "mysqlAppPassword123"
   replicationUser: "repl_user"
   replicationPassword: "replPassword123"
   database: "appdb"
@@ -205,7 +207,7 @@ mysql:
   backupToS3:
     enabled: true
     schedule: "0 3 * * *" # Daily at 03:00 UTC
-    retentionDays: 14
+    retentionCount: 3 # 严格仅保留最新 3 份数据 (滚动轮转自动清理旧版本)
 
 # ------------------------------------------------------------------------------
 # 6. REDIS 6.2.6 (3-member Sentinel HA Cluster + S3 Snapshots)
@@ -237,7 +239,7 @@ redis:
     schedule: "0 4 * * *"
 
 # ------------------------------------------------------------------------------
-# 7. APACHE ZOOKEEPER 3.6.3 (Java 1.8 Quorum Cluster)
+# 7. APACHE ZOOKEEPER 3.6.3 (Java 1.8 Quorum Cluster + SASL Authentication)
 # ------------------------------------------------------------------------------
 zookeeper:
   enabled: true # Active 3-member ZooKeeper 3.6.3 cluster
@@ -245,6 +247,10 @@ zookeeper:
     repository: "zookeeper" # Official Docker Hub image (Java 8)
     tag: "3.6.3"
   replicas: 3 # 3 members quorum (1 Leader + 2 Followers)
+  auth:
+    enabled: true
+    adminUser: "zkAdmin"
+    adminPassword: "zkAdminPassword123"
   clientPort: 2181
   peerPort: 2888
   leaderPort: 3888

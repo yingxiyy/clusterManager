@@ -38,6 +38,8 @@ spec:
                   value: {{ .Values.global.s3.region | quote }}
                 - name: S3_BUCKET
                   value: {{ .Values.global.s3.buckets.mysql | quote }}
+                - name: RETENTION_COUNT
+                  value: {{ .Values.mysql.backupToS3.retentionCount | default 3 | quote }}
               command:
                 - /bin/bash
                 - -c
@@ -52,7 +54,20 @@ spec:
                   echo "Uploading to MinIO S3: s3://${S3_BUCKET}/mysql_${TIMESTAMP}.sql.gz..."
                   aws --endpoint-url="${S3_ENDPOINT}" s3 cp "${BACKUP_FILE}" "s3://${S3_BUCKET}/mysql_${TIMESTAMP}.sql.gz"
                   rm -f "${BACKUP_FILE}"
-                  echo "MySQL S3 backup complete."
+                  
+                  echo "Enforcing Retention Policy: Retaining strictly latest ${RETENTION_COUNT} backup archives in s3://${S3_BUCKET}/..."
+                  OLD_BACKUPS=$(aws --endpoint-url="${S3_ENDPOINT}" s3 ls "s3://${S3_BUCKET}/" | grep "mysql_" | sort | head -n -"${RETENTION_COUNT}" | awk '{print $4}' || true)
+                  if [ -n "${OLD_BACKUPS}" ]; then
+                    for FILE in ${OLD_BACKUPS}; do
+                      echo "Pruning expired backup beyond 3-copy limit: s3://${S3_BUCKET}/${FILE}"
+                      aws --endpoint-url="${S3_ENDPOINT}" s3 rm "s3://${S3_BUCKET}/${FILE}"
+                    done
+                  else
+                    echo "Total backups within 3-copy threshold. No cleanup needed."
+                  fi
+                  echo "Current active backups in S3 (latest 3 retained):"
+                  aws --endpoint-url="${S3_ENDPOINT}" s3 ls "s3://${S3_BUCKET}/"
+                  echo "MySQL S3 backup and 3-copy retention complete."
 ---
 {{- end }}
 {{- if and .Values.mongodb.enabled .Values.mongodb.backupToS3.enabled }}
@@ -90,6 +105,8 @@ spec:
                   value: {{ .Values.global.s3.secretKey | quote }}
                 - name: S3_BUCKET
                   value: {{ .Values.global.s3.buckets.mongodb | quote }}
+                - name: RETENTION_COUNT
+                  value: {{ .Values.mongodb.backupToS3.retentionCount | default 3 | quote }}
               command:
                 - /bin/bash
                 - -c
@@ -106,5 +123,18 @@ spec:
                   echo "Uploading to MinIO S3: s3://${S3_BUCKET}/mongo_${TIMESTAMP}.archive.gz..."
                   aws --endpoint-url="${S3_ENDPOINT}" s3 cp "${ARCHIVE_FILE}" "s3://${S3_BUCKET}/mongo_${TIMESTAMP}.archive.gz"
                   rm -f "${ARCHIVE_FILE}"
-                  echo "MongoDB S3 backup complete."
+                  
+                  echo "Enforcing Retention Policy: Retaining strictly latest ${RETENTION_COUNT} backup archives in s3://${S3_BUCKET}/..."
+                  OLD_BACKUPS=$(aws --endpoint-url="${S3_ENDPOINT}" s3 ls "s3://${S3_BUCKET}/" | grep "mongo_" | sort | head -n -"${RETENTION_COUNT}" | awk '{print $4}' || true)
+                  if [ -n "${OLD_BACKUPS}" ]; then
+                    for FILE in ${OLD_BACKUPS}; do
+                      echo "Pruning expired backup beyond 3-copy limit: s3://${S3_BUCKET}/${FILE}"
+                      aws --endpoint-url="${S3_ENDPOINT}" s3 rm "s3://${S3_BUCKET}/${FILE}"
+                    done
+                  else
+                    echo "Total backups within 3-copy threshold. No cleanup needed."
+                  fi
+                  echo "Current active backups in S3 (latest 3 retained):"
+                  aws --endpoint-url="${S3_ENDPOINT}" s3 ls "s3://${S3_BUCKET}/"
+                  echo "MongoDB S3 backup and 3-copy retention complete."
 {{- end }}

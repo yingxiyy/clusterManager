@@ -10,63 +10,82 @@ type: Opaque
 stringData:
   root-user: {{ .Values.mongodb.auth.rootUser | quote }}
   root-password: {{ .Values.mongodb.auth.rootPassword | quote }}
-  replica-set-key: "c2VjcmV0LWtleWZpbGUtZm9yLW1vbmdvZHItc2hhcmRlZC04LjAuOQo="
+  app-user: {{ .Values.mongodb.auth.appUser | default "mongo_app" | quote }}
+  app-password: {{ .Values.mongodb.auth.appPassword | default "mongoAppPassword123" | quote }}
+  replica-set-key: "c2VjcmV0LWtleWZpbGUtZm9yLW1vbmdvZHItcmVwbGljYXNldC04LjAuOQo="
 ---
 # ==============================================================================
-# 1. MONGOS QUERY ROUTER SERVICE (Main Entrypoint for Applications on Port 27017)
+# 1. MONGODB CLIENT SERVICE (Port 27017 Client Entrypoint)
 # ==============================================================================
 apiVersion: v1
 kind: Service
 metadata:
   name: mongodb
   labels:
-    app: mongodb-mongos
+    app: mongodb
     {{- include "cloudcluster.labels" . | nindent 4 }}
 spec:
   type: ClusterIP
   ports:
-    - name: mongos
-      port: 27017
+    - name: mongodb
+      port: {{ .Values.mongodb.port | default 27017 }}
       targetPort: 27017
   selector:
-    app: mongodb-mongos
+    app: mongodb
 ---
 # ==============================================================================
-# 2. CONFIG SERVER HEADLESS SERVICE & STATEFULSET (CSRS)
+# 2. MONGODB HEADLESS SERVICE (Internal Peer Discovery for ReplicaSet rs0)
 # ==============================================================================
 apiVersion: v1
 kind: Service
 metadata:
-  name: mongodb-configsvr-headless
+  name: mongodb-headless
   labels:
-    app: mongodb-configsvr
+    app: mongodb
     {{- include "cloudcluster.labels" . | nindent 4 }}
 spec:
   clusterIP: None
+  publishNotReadyAddresses: true
   ports:
-    - name: configsvr
-      port: 27019
+    - name: mongodb
+      port: {{ .Values.mongodb.port | default 27017 }}
   selector:
-    app: mongodb-configsvr
+    app: mongodb
 ---
+# ==============================================================================
+# 3. MONGODB 3-MEMBER REPLICASET STATEFULSET (1 Primary + 2 Secondaries)
+# Distributed across 3 physical hosts with podAntiAffinity
+# ==============================================================================
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: mongodb-configsvr
+  name: mongodb
   labels:
-    app: mongodb-configsvr
+    app: mongodb
     {{- include "cloudcluster.labels" . | nindent 4 }}
 spec:
-  serviceName: mongodb-configsvr-headless
-  replicas: {{ .Values.mongodb.configsvr.replicas }}
+  serviceName: mongodb-headless
+  replicas: {{ .Values.mongodb.replicas | default 3 }}
   selector:
     matchLabels:
-      app: mongodb-configsvr
+      app: mongodb
   template:
     metadata:
       labels:
-        app: mongodb-configsvr
+        app: mongodb
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - mongodb
+                topologyKey: "kubernetes.io/hostname"
       initContainers:
         - name: setup-keyfile
           image: busybox:1.36
@@ -82,276 +101,27 @@ spec:
             - name: keyfile-perm
               mountPath: /data/keyfile
       containers:
-        - name: configsvr
+        - name: mongodb
           image: "{{ .Values.mongodb.image.repository }}:{{ .Values.mongodb.image.tag }}"
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           command:
             - /bin/bash
             - -ce
             - |
-              mongod \
-                --configsvr \
-                --replSet {{ .Values.mongodb.configsvr.replicaSetName }} \
-                --port 27019 \
-                --bind_ip_all \
-                --dbpath /data/db \
-                --keyFile /data/keyfile/key.txt
-          ports:
-            - name: configsvr
-              containerPort: 27019
-          volumeMounts:
-            - name: data
-              mountPath: /data/db
-            - name: keyfile-perm
-              mountPath: /data/keyfile
-      volumes:
-        - name: keyfile-secret
-          secret:
-            secretName: mongodb-auth
-            defaultMode: 0400
-        - name: keyfile-perm
-          emptyDir: {}
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: [ "ReadWriteOnce" ]
-        storageClassName: {{ .Values.global.storageClass | quote }}
-        resources:
-          requests:
-            storage: {{ .Values.mongodb.configsvr.persistence.size }}
----
-# ==============================================================================
-# 3. SHARD 0 STATEFULSET (3 Replicas: Primary + 2 Secondaries)
-# ==============================================================================
-apiVersion: v1
-kind: Service
-metadata:
-  name: mongodb-shard0-headless
-  labels:
-    app: mongodb-shard0
-    {{- include "cloudcluster.labels" . | nindent 4 }}
-spec:
-  clusterIP: None
-  ports:
-    - name: shardsvr
-      port: 27018
-  selector:
-    app: mongodb-shard0
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: mongodb-shard0
-  labels:
-    app: mongodb-shard0
-    {{- include "cloudcluster.labels" . | nindent 4 }}
-spec:
-  serviceName: mongodb-shard0-headless
-  replicas: {{ .Values.mongodb.shards.replicasPerShard }}
-  selector:
-    matchLabels:
-      app: mongodb-shard0
-  template:
-    metadata:
-      labels:
-        app: mongodb-shard0
-    spec:
-      initContainers:
-        - name: setup-keyfile
-          image: busybox:1.36
-          command:
-            - /bin/sh
-            - -c
-            - |
-              cp /tmp/secrets/replica-set-key /data/keyfile/key.txt
-              chmod 400 /data/keyfile/key.txt
-          volumeMounts:
-            - name: keyfile-secret
-              mountPath: /tmp/secrets
-            - name: keyfile-perm
-              mountPath: /data/keyfile
-      containers:
-        - name: shard0
-          image: "{{ .Values.mongodb.image.repository }}:{{ .Values.mongodb.image.tag }}"
-          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
-          command:
-            - /bin/bash
-            - -ce
-            - |
-              mongod \
-                --shardsvr \
-                --replSet shard0rs \
-                --port 27018 \
-                --bind_ip_all \
-                --dbpath /data/db \
-                --keyFile /data/keyfile/key.txt
-          ports:
-            - name: shardsvr
-              containerPort: 27018
-          volumeMounts:
-            - name: data
-              mountPath: /data/db
-            - name: keyfile-perm
-              mountPath: /data/keyfile
-      volumes:
-        - name: keyfile-secret
-          secret:
-            secretName: mongodb-auth
-            defaultMode: 0400
-        - name: keyfile-perm
-          emptyDir: {}
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: [ "ReadWriteOnce" ]
-        storageClassName: {{ .Values.global.storageClass | quote }}
-        resources:
-          requests:
-            storage: {{ .Values.mongodb.shards.persistence.size }}
----
-# ==============================================================================
-# 4. SHARD 1 STATEFULSET (3 Replicas: Primary + 2 Secondaries)
-# ==============================================================================
-apiVersion: v1
-kind: Service
-metadata:
-  name: mongodb-shard1-headless
-  labels:
-    app: mongodb-shard1
-    {{- include "cloudcluster.labels" . | nindent 4 }}
-spec:
-  clusterIP: None
-  ports:
-    - name: shardsvr
-      port: 27018
-  selector:
-    app: mongodb-shard1
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: mongodb-shard1
-  labels:
-    app: mongodb-shard1
-    {{- include "cloudcluster.labels" . | nindent 4 }}
-spec:
-  serviceName: mongodb-shard1-headless
-  replicas: {{ .Values.mongodb.shards.replicasPerShard }}
-  selector:
-    matchLabels:
-      app: mongodb-shard1
-  template:
-    metadata:
-      labels:
-        app: mongodb-shard1
-    spec:
-      initContainers:
-        - name: setup-keyfile
-          image: busybox:1.36
-          command:
-            - /bin/sh
-            - -c
-            - |
-              cp /tmp/secrets/replica-set-key /data/keyfile/key.txt
-              chmod 400 /data/keyfile/key.txt
-          volumeMounts:
-            - name: keyfile-secret
-              mountPath: /tmp/secrets
-            - name: keyfile-perm
-              mountPath: /data/keyfile
-      containers:
-        - name: shard1
-          image: "{{ .Values.mongodb.image.repository }}:{{ .Values.mongodb.image.tag }}"
-          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
-          command:
-            - /bin/bash
-            - -ce
-            - |
-              mongod \
-                --shardsvr \
-                --replSet shard1rs \
-                --port 27018 \
-                --bind_ip_all \
-                --dbpath /data/db \
-                --keyFile /data/keyfile/key.txt
-          ports:
-            - name: shardsvr
-              containerPort: 27018
-          volumeMounts:
-            - name: data
-              mountPath: /data/db
-            - name: keyfile-perm
-              mountPath: /data/keyfile
-      volumes:
-        - name: keyfile-secret
-          secret:
-            secretName: mongodb-auth
-            defaultMode: 0400
-        - name: keyfile-perm
-          emptyDir: {}
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: [ "ReadWriteOnce" ]
-        storageClassName: {{ .Values.global.storageClass | quote }}
-        resources:
-          requests:
-            storage: {{ .Values.mongodb.shards.persistence.size }}
----
-# ==============================================================================
-# 5. MONGOS QUERY ROUTER DEPLOYMENT (Stateless, Connected to CSRS)
-# ==============================================================================
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: mongodb-mongos
-  labels:
-    app: mongodb-mongos
-    {{- include "cloudcluster.labels" . | nindent 4 }}
-spec:
-  replicas: {{ .Values.mongodb.mongos.replicas }}
-  selector:
-    matchLabels:
-      app: mongodb-mongos
-  template:
-    metadata:
-      labels:
-        app: mongodb-mongos
-    spec:
-      initContainers:
-        - name: setup-keyfile
-          image: busybox:1.36
-          command:
-            - /bin/sh
-            - -c
-            - |
-              cp /tmp/secrets/replica-set-key /data/keyfile/key.txt
-              chmod 400 /data/keyfile/key.txt
-          volumeMounts:
-            - name: keyfile-secret
-              mountPath: /tmp/secrets
-            - name: keyfile-perm
-              mountPath: /data/keyfile
-      containers:
-        - name: mongos
-          image: "{{ .Values.mongodb.image.repository }}:{{ .Values.mongodb.image.tag }}"
-          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
-          command:
-            - /bin/bash
-            - -ce
-            - |
-              mongos \
-                --configdb configReplSet/mongodb-configsvr-0.mongodb-configsvr-headless:27019,mongodb-configsvr-1.mongodb-configsvr-headless:27019,mongodb-configsvr-2.mongodb-configsvr-headless:27019 \
+              exec mongod \
+                --replSet {{ .Values.mongodb.replicaSetName | default "rs0" }} \
                 --port 27017 \
                 --bind_ip_all \
+                --dbpath /data/db \
                 --keyFile /data/keyfile/key.txt
           ports:
-            - name: mongos
+            - name: mongodb
               containerPort: 27017
+          resources:
+            {{- toYaml .Values.mongodb.resources | nindent 12 }}
           volumeMounts:
+            - name: data
+              mountPath: /data/db
             - name: keyfile-perm
               mountPath: /data/keyfile
       volumes:
@@ -361,16 +131,25 @@ spec:
             defaultMode: 0400
         - name: keyfile-perm
           emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: {{ .Values.mongodb.persistence.storageClass | default .Values.global.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.mongodb.persistence.size }}
 ---
 # ==============================================================================
-# 6. SHARDED CLUSTER INITIALIZATION HOOK (CSRS + Shards Registration)
+# 4. MONGODB REPLICASET AUTOMATIC INITIALIZATION HOOK (rs.initiate)
 # ==============================================================================
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: mongodb-sharded-init
+  name: mongodb-replicaset-init
   labels:
-    app: mongodb-sharded-init
+    app: mongodb-init
     {{- include "cloudcluster.labels" . | nindent 4 }}
   annotations:
     "helm.sh/hook": post-install,post-upgrade
@@ -381,71 +160,73 @@ spec:
     spec:
       restartPolicy: OnFailure
       containers:
-        - name: init-sharded-cluster
+        - name: init-replicaset
           image: "{{ .Values.mongodb.image.repository }}:{{ .Values.mongodb.image.tag }}"
           command:
             - /bin/bash
             - -c
             - |
-              echo "Waiting for configsvr to be ready..."
-              until mongosh --host mongodb-configsvr-0.mongodb-configsvr-headless --port 27019 --eval "db.adminCommand('ping')" > /dev/null 2>&1; do
+              echo "Waiting for mongodb-0 to become responsive..."
+              until mongosh --host mongodb-0.mongodb-headless --port 27017 --eval "db.adminCommand('ping')" > /dev/null 2>&1; do
                 sleep 2
               done
 
-              echo "Initiating Config Server ReplicaSet (CSRS)..."
-              mongosh --host mongodb-configsvr-0.mongodb-configsvr-headless --port 27019 --eval "
+              echo "Checking or initiating MongoDB ReplicaSet ({{ .Values.mongodb.replicaSetName | default "rs0" }})..."
+              mongosh --host mongodb-0.mongodb-headless --port 27017 --eval "
                 try {
+                  const status = rs.status();
+                  print('ReplicaSet already initialized. Current state: ' + status.ok);
+                } catch (err) {
+                  print('Initiating ReplicaSet {{ .Values.mongodb.replicaSetName | default "rs0" }} across 3 physical nodes...');
                   rs.initiate({
-                    _id: 'configReplSet',
-                    configsvr: true,
+                    _id: '{{ .Values.mongodb.replicaSetName | default "rs0" }}',
                     members: [
-                      { _id: 0, host: 'mongodb-configsvr-0.mongodb-configsvr-headless:27019' },
-                      { _id: 1, host: 'mongodb-configsvr-1.mongodb-configsvr-headless:27019' },
-                      { _id: 2, host: 'mongodb-configsvr-2.mongodb-configsvr-headless:27019' }
+                      { _id: 0, host: 'mongodb-0.mongodb-headless:27017', priority: 2 },
+                      { _id: 1, host: 'mongodb-1.mongodb-headless:27017', priority: 1 },
+                      { _id: 2, host: 'mongodb-2.mongodb-headless:27017', priority: 1 }
                     ]
                   });
-                } catch(e) { print(e); }
-              " || true
-
-              echo "Initiating Shard 0 ReplicaSet..."
-              mongosh --host mongodb-shard0-0.mongodb-shard0-headless --port 27018 --eval "
-                try {
-                  rs.initiate({
-                    _id: 'shard0rs',
-                    members: [
-                      { _id: 0, host: 'mongodb-shard0-0.mongodb-shard0-headless:27018' },
-                      { _id: 1, host: 'mongodb-shard0-1.mongodb-shard0-headless:27018' },
-                      { _id: 2, host: 'mongodb-shard0-2.mongodb-shard0-headless:27018' }
-                    ]
-                  });
-                } catch(e) { print(e); }
-              " || true
-
-              echo "Initiating Shard 1 ReplicaSet..."
-              mongosh --host mongodb-shard1-0.mongodb-shard1-headless --port 27018 --eval "
-                try {
-                  rs.initiate({
-                    _id: 'shard1rs',
-                    members: [
-                      { _id: 0, host: 'mongodb-shard1-0.mongodb-shard1-headless:27018' },
-                      { _id: 1, host: 'mongodb-shard1-1.mongodb-shard1-headless:27018' },
-                      { _id: 2, host: 'mongodb-shard1-2.mongodb-shard1-headless:27018' }
-                    ]
-                  });
-                } catch(e) { print(e); }
-              " || true
-
-              sleep 5
-              echo "Waiting for mongos router to be online..."
-              until mongosh --host mongodb --port 27017 --eval "db.adminCommand('ping')" > /dev/null 2>&1; do
-                sleep 2
-              done
-
-              echo "Registering Shard 0 & Shard 1 into Mongos Router..."
-              mongosh --host mongodb --port 27017 --eval "
-                sh.addShard('shard0rs/mongodb-shard0-0.mongodb-shard0-headless:27018,mongodb-shard0-1.mongodb-shard0-headless:27018,mongodb-shard0-2.mongodb-shard0-headless:27018');
-                sh.addShard('shard1rs/mongodb-shard1-0.mongodb-shard1-headless:27018,mongodb-shard1-1.mongodb-shard1-headless:27018,mongodb-shard1-2.mongodb-shard1-headless:27018');
-                sh.status();
+                  print('ReplicaSet initiated successfully!');
+                }
               "
-              echo "MongoDB Sharded Cluster fully initialized!"
+
+              sleep 6
+              echo "Creating MongoDB Root Administrator Account in admin database..."
+              mongosh --host mongodb-0.mongodb-headless --port 27017 --eval "
+                try {
+                  // 1. Root Cluster Administrator in admin database
+                  db.getSiblingDB('admin').createUser({
+                    user: '{{ .Values.mongodb.auth.rootUser }}',
+                    pwd: '{{ .Values.mongodb.auth.rootPassword }}',
+                    roles: [ { role: 'root', db: 'admin' } ]
+                  });
+                  print('Admin root user created successfully.');
+
+                  // 2. Direct Application User in target business database (appdb)
+                  // Standard MongoDB drivers (Spring Boot, PyMongo, Mongoose) connecting to /appdb 
+                  // authenticate directly on appdb WITHOUT needing authSource=admin or --authenticationDatabase!
+                  db.getSiblingDB('appdb').createUser({
+                    user: '{{ .Values.mongodb.auth.appUser | default "mongo_app" }}',
+                    pwd: '{{ .Values.mongodb.auth.appPassword | default "mongoAppPassword123" }}',
+                    roles: [ { role: 'readWrite', db: 'appdb' }, { role: 'dbAdmin', db: 'appdb' } ]
+                  });
+                  print('Application user ({{ .Values.mongodb.auth.appUser | default "mongo_app" }}) created directly on appdb.');
+
+                  // 3. Universal Multi-Database User in admin database
+                  // Allows other applications/microservices to access any database using ?authSource=admin
+                  db.getSiblingDB('admin').createUser({
+                    user: '{{ .Values.mongodb.auth.appUser | default "mongo_app" }}',
+                    pwd: '{{ .Values.mongodb.auth.appPassword | default "mongoAppPassword123" }}',
+                    roles: [ { role: 'readWriteAnyDatabase', db: 'admin' }, { role: 'clusterMonitor', db: 'admin' } ]
+                  });
+                  print('Universal application user ({{ .Values.mongodb.auth.appUser | default "mongo_app" }}) created in admin for multi-database access.');
+                } catch(e) {
+                  print('User already exists or warning: ' + e.message);
+                }
+              " || true
+
+              echo "------------------------------------------------------------"
+              echo "✅ MongoDB 3-Member ReplicaSet (rs0) initialized successfully!"
+              echo "Connection URI: mongodb://admin:*****@mongodb-0.mongodb-headless:27017,mongodb-1.mongodb-headless:27017,mongodb-2.mongodb-headless:27017/?replicaSet=rs0&authSource=admin"
+              echo "------------------------------------------------------------"
 {{- end }}
